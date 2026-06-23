@@ -1,0 +1,14 @@
+{
+  "name": "qianwen-source-extractor",
+  "version": "1.0.0",
+  "description": "Extract reference sources from Qianwen share pages and write them to Feishu Bitable",
+  "main": "run.js",
+  "scripts": {
+    "extract": "node extract-sources.js",
+    "write": "node write-feishu.js",
+    "run": "node run.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.40.0"
+  }
+}

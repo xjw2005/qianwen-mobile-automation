@@ -1,0 +1,8 @@
+python -m mobile_auto_qianwen.runner --task tasks\\qianwen_real_device_thinking_smoke.json --output results\\qianwen-real-device-thinking-fast.json --serial 100.76.50.7:6666 --source-limit 2
+
+
+python -m mobile_auto_qianwen.runner --base-url "https://yuoukuajing.feishu.cn/base/UiE3bhcHRaCE01sh5Anc1AZanKd?table=tblXZ8vq7SouTIuu&view=vewZsJsX7y" --base-limit 3 --source-limit 99 --writeback --lark-cli "C:\Users\Administrator\.workbuddy\bin\lark-cli.cmd" --adb "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe" --device 100.76.50.7:6666
+
+python -m mobile_auto_qianwen.runner --base-url "https://yuoukuajing.feishu.cn/base/UiE3bhcHRaCE01sh5Anc1AZanKd?table=tblXZ8vq7SouTIuu&view=vewZsJsX7y" --base-limit 1 --source-limit 99 --writeback --mark-collected --extract-sources --lark-cli "C:\Users\Administrator\.workbuddy\bin\lark-cli.cmd" --adb "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe" --device 100.76.50.7:6666
+
+python -m mobile_auto_qianwen.runner --base-url "https://yuoukuajing.feishu.cn/base/UiE3bhcHRaCE01sh5Anc1AZanKd?table=tblXZ8vq7SouTIuu&view=vewZsJsX7y" --base-start 13 --base-end 13 --extract-sources --cdp-url http://127.0.0.1:9222 --writeback --mark-collected --collect-account 18870501682 --serial 100.76.50.7:6666 --lark-cli "C:\Users\Administrator\.workbuddy\bin\lark-cli.cmd" --adb "C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe"
