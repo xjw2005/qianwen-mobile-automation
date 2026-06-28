@@ -1,6 +1,6 @@
 ---
 name: qianwen-mobile-automation
-description: Drives Qianwen Android via ADB to capture answers/share links, extracts real source URLs via a Node.js CDP script, and writes to Feishu. Invoke for Qianwen mobile runs or share-page source extraction.
+description: Drives Qianwen Android via ADB to capture answers/share links, extracts real source URLs via a Node.js CDP script, and writes to Feishu. Invoke for Qianwen mobile runs or share-page source extraction. NEW: --link-only mode skips mobile thinking capture and pulls answer + 深度思考 + sources from the share-page share/info API in one shot; --feishu-config externalizes the Feishu answer/source table IDs into a JSON (switch environments without source edits).
 ---
 
 # Qianwen Mobile Automation
@@ -61,6 +61,22 @@ python -m mobile_auto_qianwen.runner `
 For parallel runs, pass a unique `--serial` and a unique `--output` per process.
 The runner refuses to guess when multiple adb devices are online, which prevents cross-device runs.
 
+Externalized Feishu table config + link-only (recommended for switching environments):
+
+```powershell
+# Dry-run: JSON supplies input base + answer/source table IDs; CLI still overrides
+python -m mobile_auto_qianwen.runner --feishu-config configs\feishu-qianwen-example.json --base-start 1 --base-end 10 --dry-run
+
+# Live: answer/思考/来源 all come from the share-page share/info API (link-only)
+python -m mobile_auto_qianwen.runner `
+  --feishu-config configs\feishu-qianwen-example.json `
+  --base-start 1 --base-end 10 --writeback --mark-collected `
+  --extract-sources --link-only --cdp-url http://127.0.0.1:9222 `
+  --lark-cli "<lark-cli-path>" --adb "<adb-path>" --serial <device-serial>
+```
+
+When switching to a different Feishu Base, usually only the table IDs in the JSON change — no source edits, no column-name changes. In `--link-only` mode the phone only asks the question and grabs the share link; answer/深度思考/来源 are pulled from the share page in one shot.
+
 ## CLI Parameters
 
 ### Task Configuration
@@ -84,6 +100,8 @@ The runner refuses to guess when multiple adb devices are online, which prevents
 - `--mark-collected` — Mark Feishu rows "是否本次采集" as "否" after writeback.
 - `--collect-account` — Override "采集账号" field in Feishu.
 - `--lark-cli` — lark-cli executable path.
+- `--feishu-config` / `--writeback-config` — JSON file that externalizes the Feishu input base + answer/source writeback table IDs. Loaded at startup and applied as defaults; **CLI flags always override JSON**. Template: `references/mobile-auto-qianwen/configs/feishu-qianwen-example.json`. Only table IDs change between environments — field names and column structure stay fixed (see `feishu_base.py` `ANSWER_WRITEBACK_FIELDS` / `SOURCE_WRITEBACK_FIELDS`).
+- `--answer-table-id` — Feishu table_id for the answer writeback table (defaults to the built-in Qianwen answer table).
 
 ### Source Extraction
 
@@ -95,6 +113,7 @@ The runner refuses to guess when multiple adb devices are online, which prevents
 - `--source-base-token` — Feishu base_token for source table (defaults to input base_token).
 - `--source-table-id` — Feishu table_id for source table (defaults to built-in Qianwen source table).
 - `--source-limit` — How many sources to collect per question (default: 2).
+- `--link-only` — Skip mobile-side thinking capture; take **answer + 深度思考 + sources** from the share-page `share/info` API instead. **Requires `--extract-sources`.** Faster and more complete: the API content is the full conversation, not limited to the mobile viewport. The API answer/thinking override the mobile-captured values.
 
 ### Other Options
 
@@ -130,7 +149,7 @@ The JS extractor needs Chrome running with `--remote-debugging-port=9222` and th
 ## Required References
 
 - `references/README.md`: migration, environment setup, ADB checks, ADB Keyboard setup, Chrome CDP setup, task JSON contract, Feishu Base mode, output contract, troubleshooting, and the cooperation diagram between the two modules.
-- `references/mobile-auto-qianwen/`: runnable Python project snapshot containing `mobile_auto_qianwen/` (the package).
+- `references/mobile-auto-qianwen/`: runnable Python project snapshot containing `mobile_auto_qianwen/` (the package) and `configs/feishu-qianwen-example.json` (externalized Feishu table-ID template).
 - `references/qianwen-source-extractor/`: standalone JS extractor reference (top-level) for agents that only need web-side source extraction.
 - `references/tasks/`: task JSON examples for the Python runner.
 - `references/tools/keyboardservice-debug.apk`: ADB Keyboard APK for reliable Chinese text input.
@@ -143,7 +162,7 @@ The JS extractor needs Chrome running with `--remote-debugging-port=9222` and th
 - `runner.py` — CLI entry point. Parse args, build task, run sessions, write results, invoke JS extractor bridge.
 - `app.py` — UI automation: ensure_app, create_new_chat, enter_thinking_mode, send_question, wait_for_answer, click_view_all, capture_thinking_content, extract_answer_share_link.
 - `source_extractor_bridge.py` — Bridge to the JS extractor. Validates share URL, locates run.js, invokes with subprocess, retries with exponential backoff.
-- `feishu_base.py` — Feishu Base read/write via lark-cli. Builds tasks from Feishu rows, writes answer rows back.
+- `feishu_base.py` — Feishu Base read/write via lark-cli. Builds tasks from Feishu rows, writes answer rows back. Writeback table IDs are read from `writeback_context` (supplied by `--feishu-config`/CLI) and fall back to the `FEISHU_ANSWER_TABLE_ID` / `FEISHU_SOURCE_TABLE_ID` constants; column structure is fixed.
 - `adb_client.py` — ADB wrapper (tap, keyevent, text broadcast, dump_xml, screenshot, ime).
 - `constants.py` — Qianwen package name, ADB Keyboard IME, UI text constants.
 - `ocr.py` — Windows Media.Ocr wrapper for screenshot-based OCR fallback.
@@ -159,7 +178,7 @@ The JS extractor needs Chrome running with `--remote-debugging-port=9222` and th
 ### JS extractor (`references/qianwen-source-extractor/` and `references/mobile-auto-qianwen/qianwen-source-extractor/`)
 
 - `run.js` — Main entry. Parses args, calls extract-sources.js, then write-feishu.js. Supports `--extract-only`, `--write-only`, `--dry-run`.
-- `extract-sources.js` — Connects to Chrome via CDP (`connectOverCDP`), finds the Qianwen share tab by share_id, replays the share/info API from the page context, walks `data.session.record_list[].response_messages[].meta_data.sources[].content.list[]` (and the `multi_load[].content.docs[]` variant), and returns clean source objects with real URLs.
+- `extract-sources.js` — Connects to Chrome via CDP (`connectOverCDP`), finds the Qianwen share tab by share_id, replays the share/info API from the page context, walks `data.session.record_list[].response_messages[].meta_data.sources[].content.list[]` (and the `multi_load[].content.docs[]` variant), and returns clean source objects with real URLs. It also returns `answer`, `thinkingContent`, and `searchEnabled` extracted from the same response (`response_messages[]` split by `mime_type`: `plan_cot/post` → 深度思考, `multi_load/iframe` etc. → answer with inline markers like `[(deep_think)]` / `[source_group_web_N]` stripped). These feed `--link-only`.
 - `write-feishu.js` — Builds Feishu rows (来源标题, 来源URL, 引用来源类型, 引用来源平台, 关联自然问句) and creates records via `lark-cli base +record-batch-create`.
 - `package.json` — Declares `playwright-core` dependency.
 

@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-token")
     parser.add_argument("--table-id")
     parser.add_argument("--view-id")
+    parser.add_argument("--feishu-config", "--writeback-config", dest="feishu_config", help="JSON file describing Feishu input base and answer/source writeback table IDs. CLI flags override JSON values.")
     parser.add_argument("--base-start", type=int, help="1-based start row in Feishu Base, inclusive.")
     parser.add_argument("--base-end", type=int, help="1-based end row in Feishu Base, inclusive.")
     parser.add_argument("--base-limit", type=int, default=50)
@@ -69,6 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--platform", default="千问")
     parser.add_argument("--lark-cli", default="lark-cli")
     parser.add_argument("--force-quick", action="store_true")
+    parser.add_argument("--link-only", action="store_true",
+                        help="Skip mobile-side thinking capture; rely on --extract-sources to fetch answer/thinking/sources from the share page API.")
     parser.add_argument("--debug", action="store_true")
     # —— JS 来源提取器集成 ——
     parser.add_argument(
@@ -82,7 +85,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--extractor-retries", type=int, default=2, help="Max retries for the JS extractor on failure.")
     parser.add_argument("--source-base-token", default="", help="Feishu base_token for the source table. Defaults to the input base_token.")
     parser.add_argument("--source-table-id", default="", help="Feishu table_id for the source table. Defaults to the built-in Qianwen source table.")
+    parser.add_argument("--answer-table-id", default="", help="Feishu table_id for the answer writeback table. Defaults to the built-in Qianwen answer table.")
     return parser.parse_args()
+
+
+def load_feishu_config(path: str | None) -> dict:
+    """Load optional Feishu input/writeback table configuration from JSON."""
+    if not path:
+        return {}
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise ValueError(f"Feishu config file not found: {path}")
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    if not isinstance(config, dict):
+        raise ValueError("Feishu config must be a JSON object.")
+    return config
+
+
+def _pick(config: dict, *keys: str) -> str:
+    for key in keys:
+        value = config.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def apply_feishu_config(args: argparse.Namespace, config: dict) -> None:
+    """Apply JSON Feishu config values as CLI defaults (CLI flags win)."""
+    if not config:
+        return
+    input_cfg = config.get("input") or config.get("read") or config.get("base") or {}
+    writeback_cfg = config.get("writeback") or config.get("output") or {}
+    source_cfg = config.get("sourceExtractor") or {}
+    if not isinstance(input_cfg, dict) or not isinstance(writeback_cfg, dict) or not isinstance(source_cfg, dict):
+        raise ValueError("Feishu config input/writeback/sourceExtractor sections must be JSON objects.")
+
+    args.base_url = args.base_url or _pick(input_cfg, "baseUrl", "url")
+    args.base_token = args.base_token or _pick(input_cfg, "baseToken", "base_token")
+    args.table_id = args.table_id or _pick(input_cfg, "tableId", "table_id")
+    args.view_id = args.view_id or _pick(input_cfg, "viewId", "view_id")
+    args.answer_table_id = args.answer_table_id or _pick(writeback_cfg, "answerTableId", "answer_table_id")
+    args.source_table_id = args.source_table_id or _pick(writeback_cfg, "sourceTableId", "source_table_id", "aiSourceTableId", "ai_source_table_id")
+    args.source_base_token = args.source_base_token or _pick(writeback_cfg, "baseToken", "base_token") or _pick(source_cfg, "baseToken", "base_token")
+    args.collect_account = args.collect_account or _pick(config, "collectAccount", "collect_account")
 
 
 def question_artifact_dir(output: str, session_name: str, index: int) -> str:
@@ -208,11 +254,13 @@ def run_question(
         # Source extraction is intentionally disabled for the current Feishu path.
         # Thinking-detail capture still runs when deep-thinking mode is requested,
         # because Feishu writeback has a dedicated "深度思考" field.
+        # link_only 模式跳过手机端思考捕获，改由 JS 提取器从分享页 API 取 answer/thinking。
+        link_only = bool(task["options"].get("linkOnly", False))
         sources = []
         expert_answer = {"status": "success" if answer else "failed", "thinking": "", "answer": answer_result.get("answer", "")}
         detail_open = False
         try:
-            if requested_thinking:
+            if requested_thinking and not link_only:
                 _t_view = time.monotonic()
                 view_all = click_view_all(adb, output_dir)
                 timing["clickViewAll"] = int((time.monotonic() - _t_view) * 1000)
@@ -252,6 +300,8 @@ def run_question(
                         "rawContentLength": len(thinking_capture.get("rawContent", "")),
                         "snapshots": thinking_capture.get("snapshots", []),
                     }
+            elif link_only:
+                debug["thinkingCapture"] = {"status": "skipped", "reason": "link_only_mode"}
         except Exception as exc:
             debug["notes"].append(f"thinking_capture_failed:{exc}")
             debug["thinkingCaptureError"] = str(exc)
@@ -313,6 +363,21 @@ def run_question(
                 }
                 # 将提取到的来源摘要回填到 result.sources（仅用于结果记录，飞书写回由 JS 完成）
                 extracted = extraction_result.get("extractedSources") or {}
+                # share/info API 的 answer/thinking 是完整内容，不受手机可见视口限制；
+                # 拿到分享链接后以它为准，覆盖手机端捕获结果（link_only 模式下手机端未抓思考）。
+                api_answer = str(extracted.get("answer") or "").strip()
+                api_thinking = str(extracted.get("thinkingContent") or "").strip()
+                if api_answer:
+                    answer = api_answer
+                    expert_answer["answer"] = api_answer
+                if api_thinking:
+                    expert_answer["thinking"] = api_thinking
+                debug["shareApiCapture"] = {
+                    "answerLength": len(api_answer),
+                    "thinkingLength": len(api_thinking),
+                    "searchEnabled": bool(extracted.get("searchEnabled")),
+                    "sourceFormat": extracted.get("sourceFormat"),
+                }
                 for src in extracted.get("sources", []):
                     sources.append({
                         "index": src.get("index"),
@@ -461,6 +526,11 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--base-end must be greater than or equal to --base-start.")
     if not isinstance(args.base_limit, int) or args.base_limit < 1 or args.base_limit > 350:
         raise ValueError("--base-limit must be an integer from 1 to 350.")
+    if args.link_only and not args.extract_sources:
+        raise ValueError(
+            "--link-only requires --extract-sources: mobile thinking capture is skipped, "
+            "so answer/thinking/sources must come from the JS extractor (share page API)."
+        )
 
 
 def force_quick_mode(task: dict) -> None:
@@ -478,6 +548,8 @@ def force_quick_mode(task: dict) -> None:
 def main() -> None:
     """CLI entry point for the Qianwen runner."""
     args = parse_args()
+    feishu_config = load_feishu_config(args.feishu_config)
+    apply_feishu_config(args, feishu_config)
     validate_args(args)
     loaded = {"task": load_task(args.task), "taskPath": str(Path(args.task).resolve()), "source": "task-json"} if args.task else build_task_from_feishu(args)
     task = normalize_task(loaded["task"]) if not args.task else loaded["task"]
@@ -493,6 +565,8 @@ def main() -> None:
         task.setdefault("options", {})["collectAccount"] = args.collect_account
     if args.source_limit:
         task.setdefault("options", {})["sourceLimit"] = args.source_limit
+    if args.link_only:
+        task.setdefault("options", {})["linkOnly"] = True
     if args.debug:
         task.setdefault("options", {}).setdefault("debug", {})["enabled"] = True
     if args.extract_sources:
@@ -513,7 +587,7 @@ def main() -> None:
                 "summary": summarize_task(task),
                 "generatedTask": loaded.get("task") if loaded.get("source") == "feishu-base" else None,
                 "skipped": loaded.get("skipped"),
-                "plannedWriteback": planned_writeback(task, args.writeback, args.mark_collected) if loaded.get("source") == "feishu-base" else None,
+                "plannedWriteback": planned_writeback(task, args.writeback, args.mark_collected, answer_table_id=args.answer_table_id, source_table_id=args.source_table_id) if loaded.get("source") == "feishu-base" else None,
                 "sourceExtractor": task.get("options", {}).get("sourceExtractor"),
             },
             ensure_ascii=False,
@@ -524,6 +598,7 @@ def main() -> None:
         raise ValueError("No Feishu rows selected. Check 是否本次采集.")
     writeback_context = None
     if loaded.get("source") == "feishu-base":
+        planned = planned_writeback(task, True, answer_table_id=args.answer_table_id, source_table_id=args.source_table_id)
         writeback_context = {
             "enabled": args.writeback,
             "base": loaded["base"],
@@ -531,8 +606,8 @@ def main() -> None:
             "collectAccount": args.collect_account or task.get("options", {}).get("collectAccount"),
             "larkCli": args.lark_cli,
             "dryRun": args.dry_run,
-            "answerTableId": planned_writeback(task, True)["answerTableId"],
-            "sourceTableId": planned_writeback(task, True)["sourceTableId"],
+            "answerTableId": planned["answerTableId"],
+            "sourceTableId": planned["sourceTableId"],
         }
     # —— 构建 JS 来源提取器上下文 ——
     # 触发条件：CLI --extract-sources 或 task.options.sourceExtractor.enabled

@@ -316,6 +316,41 @@ async function extractQianwenSourcesViaApi(page, shareId) {
       academicId: String(item.academic_id || ''),
     }));
 
+    // —— 答案与思考内容（--link-only 模式所需）——
+    // response_messages 按 mime_type 区分内容：
+    //   plan_cot/post        → 深度思考（链式思考计划）
+    //   multi_load/iframe 等 → 最终回答正文（含 [(deep_think)] / [source_group_web_N] 等内联标记）
+    //   signal/* bar/* paa/* → UI 信号，content 为空
+    function cleanAnswerMarkers(text) {
+      return String(text || '')
+        // 去掉 [(deep_think)] [source_group_web_1] [(video_note_list_1)] 这类纯 ASCII 标记，
+        // 中文方括号【】与括号（）不受影响。
+        .replace(/\[\(?[a-z][a-z0-9_]*\)?\]/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+    const THINK_MIME = /plan_cot|cot|reason|think/i;
+    const thinkingParts = [];
+    const answerCandidates = [];
+    for (let r = 0; r < recordList.length; r += 1) {
+      const messages = recordList[r].response_messages || [];
+      for (let m = 0; m < messages.length; m += 1) {
+        const msg = messages[m];
+        if (typeof msg.content !== 'string' || !msg.content.trim()) continue;
+        if (THINK_MIME.test(String(msg.mime_type || ''))) thinkingParts.push(msg.content);
+        else answerCandidates.push(msg.content);
+      }
+    }
+    const thinkingContent = thinkingParts.map(t => String(t).trim()).filter(Boolean).join('\n\n');
+    // 回答取“非思考、清洗后最长”的一条，避免被进度条/信号类内容干扰。
+    let answer = '';
+    for (let i = 0; i < answerCandidates.length; i += 1) {
+      const cleaned = cleanAnswerMarkers(answerCandidates[i]);
+      if (cleaned.length > answer.length) answer = cleaned;
+    }
+    const searchEnabled = recordList.some(r => Boolean(r.deep_search));
+
     return {
       ok: true,
       url: location.href,
@@ -325,6 +360,9 @@ async function extractQianwenSourcesViaApi(page, shareId) {
       shareId: sid,
       count: sources.length,
       sources,
+      answer,
+      thinkingContent,
+      searchEnabled,
     };
   }, { apiUrl: SHARE_INFO_API, sid: shareId });
 }
@@ -343,15 +381,30 @@ async function waitForQianwenReady(page, timeout = 15000) {
 async function extractSources(cdpUrl, shareUrl, timeout = 15000) {
   const browser = await chromium.connectOverCDP(cdpUrl);
   try {
-    const page = pickQianwenPage(browser.contexts(), shareUrl);
-    if (!page) throw new Error('No browser page found from CDP endpoint.');
+    const shareId = extractShareId(shareUrl);
+    if (!shareId) throw new Error('Could not extract share_id from --url argument.');
+
+    let page = pickQianwenPage(browser.contexts(), shareUrl);
+
+    // pickQianwenPage 找不到时会回退到 pages[0]（可能是 chrome://newtab 等内部页）。
+    // 在非 qianwen.com 页面上下文里 fetch chat2-api 会被浏览器安全策略拦截（Failed to fetch）。
+    // 因此需要检查页面 URL 是否真的是千问分享页，否则新开标签页并导航到 shareUrl。
+    const isQianwenSharePage = page && page.url().includes(shareId);
+    if (!isQianwenSharePage) {
+      const context = browser.contexts()[0];
+      page = await context.newPage();
+      await page.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout });
+    }
+
     await page.bringToFront();
     await waitForQianwenReady(page, timeout);
-
-    const shareId = extractShareId(page.url()) || extractShareId(shareUrl);
-    if (!shareId) throw new Error('Could not extract share_id from page URL or --url argument.');
-
-    return await extractQianwenSourcesViaApi(page, shareId);
+    
+    const result = await extractQianwenSourcesViaApi(page, shareId);
+    
+    // 提取完成后关闭当前标签页
+    await page.close().catch(() => {});
+    
+    return result;
   } finally {
     await browser.close().catch(() => {});
   }
@@ -362,6 +415,7 @@ async function main() {
   if (!args.url) throw new Error('--url is required (Qianwen share URL)');
 
   const result = await extractSources(args.cdp, args.url, args.timeout);
+  
   const json = JSON.stringify(result, null, 2);
   if (args.output) fs.writeFileSync(args.output, `${json}\n`, 'utf8');
   console.log(json);

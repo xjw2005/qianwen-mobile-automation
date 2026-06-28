@@ -9,6 +9,14 @@ The integration has **two cooperating modules**:
 
 The Python runner is the orchestrator. When `--extract-sources` is enabled, it captures the answer share link on the phone, hands it to the JS extractor, and the JS extractor writes the sources to Feishu.
 
+## Changelog / 变更说明
+
+### 2026-06-24 — `--link-only` + 飞书表 ID 外置
+
+- **New `--link-only` mode** (mirrors the DeepSeek runner). Skips mobile-side thinking capture; the phone only asks the question and grabs the share link, then answer + 深度思考 + sources are pulled from the share page in one shot. Requires `--extract-sources`. The share-page content overrides the mobile-captured answer/thinking.
+- **`extract-sources.js` now also returns `answer`, `thinkingContent`, and `searchEnabled`.** They come from the same `share/info` API response: `response_messages[]` are split by `mime_type` (`plan_cot/post` → 深度思考; `multi_load/iframe` etc. → answer with inline markers like `[(deep_think)]` / `[source_group_web_N]` / `[(video_note_list_1)]` stripped). Verified end-to-end against a real share link (18 sources + 1786-char answer + 268-char thinking, 0 residual markers). The source-extraction path is unchanged.
+- **Externalized Feishu table IDs**: new `--feishu-config` (alias `--writeback-config`) loads a JSON with `input.baseUrl`/`baseToken`/`tableId`/`viewId`, `writeback.answerTableId`, `writeback.sourceTableId`, and `collectAccount`; applied as defaults with **CLI overriding JSON**. New `--answer-table-id` flag. Template: `mobile-auto-qianwen/configs/feishu-qianwen-example.json`. Only table IDs change between environments — field names/column structure stay fixed (`feishu_base.py` `ANSWER_WRITEBACK_FIELDS` / `SOURCE_WRITEBACK_FIELDS`).
+
 ## What This Skill Contains
 
 ```text
@@ -31,6 +39,8 @@ references/
       time_utils.py                 # ISO timestamps and stamps
       ui_xml.py                     # uiautomator XML parsing
       命令大全.txt                   # ready-to-paste command examples
+    configs/                        # externalized Feishu table-ID config
+      feishu-qianwen-example.json   # --feishu-config template (only table IDs change per env)
     qianwen-source-extractor/       # JS extractor (module 1, integrated copy)
       run.js                        # main entry: extract + write to Feishu
       extract-sources.js            # CDP-based source URL extraction

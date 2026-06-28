@@ -316,6 +316,41 @@ async function extractQianwenSourcesViaApi(page, shareId) {
       academicId: String(item.academic_id || ''),
     }));
 
+    // —— 答案与思考内容（--link-only 模式所需）——
+    // response_messages 按 mime_type 区分内容：
+    //   plan_cot/post        → 深度思考（链式思考计划）
+    //   multi_load/iframe 等 → 最终回答正文（含 [(deep_think)] / [source_group_web_N] 等内联标记）
+    //   signal/* bar/* paa/* → UI 信号，content 为空
+    function cleanAnswerMarkers(text) {
+      return String(text || '')
+        // 去掉 [(deep_think)] [source_group_web_1] [(video_note_list_1)] 这类纯 ASCII 标记，
+        // 中文方括号【】与括号（）不受影响。
+        .replace(/\[\(?[a-z][a-z0-9_]*\)?\]/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+    const THINK_MIME = /plan_cot|cot|reason|think/i;
+    const thinkingParts = [];
+    const answerCandidates = [];
+    for (let r = 0; r < recordList.length; r += 1) {
+      const messages = recordList[r].response_messages || [];
+      for (let m = 0; m < messages.length; m += 1) {
+        const msg = messages[m];
+        if (typeof msg.content !== 'string' || !msg.content.trim()) continue;
+        if (THINK_MIME.test(String(msg.mime_type || ''))) thinkingParts.push(msg.content);
+        else answerCandidates.push(msg.content);
+      }
+    }
+    const thinkingContent = thinkingParts.map(t => String(t).trim()).filter(Boolean).join('\n\n');
+    // 回答取“非思考、清洗后最长”的一条，避免被进度条/信号类内容干扰。
+    let answer = '';
+    for (let i = 0; i < answerCandidates.length; i += 1) {
+      const cleaned = cleanAnswerMarkers(answerCandidates[i]);
+      if (cleaned.length > answer.length) answer = cleaned;
+    }
+    const searchEnabled = recordList.some(r => Boolean(r.deep_search));
+
     return {
       ok: true,
       url: location.href,
@@ -325,6 +360,9 @@ async function extractQianwenSourcesViaApi(page, shareId) {
       shareId: sid,
       count: sources.length,
       sources,
+      answer,
+      thinkingContent,
+      searchEnabled,
     };
   }, { apiUrl: SHARE_INFO_API, sid: shareId });
 }
