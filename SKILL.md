@@ -115,6 +115,8 @@ When switching to a different Feishu Base, usually only the table IDs in the JSO
 - `--source-limit` — How many sources to collect per question (default: 2).
 - `--link-only` — Skip mobile-side thinking capture; take **answer + 深度思考 + sources** from the share-page `share/info` API instead. **Requires `--extract-sources`.** Faster and more complete: the API content is the full conversation, not limited to the mobile viewport. The API answer/thinking override the mobile-captured values.
 
+Current Feishu input rows use `问题文本`, `问题ID`, and `是否开启深度思考`; `是否本次采集` is optional and defaults to `是` when absent. Legacy input fields `问题` and `关联自然问句` are still tolerated during migration.
+
 ### Other Options
 
 - `--platform` — Platform name (default: "千问").
@@ -129,7 +131,7 @@ Use the JS extractor on its own when you already have a Qianwen share URL.
 # Extract + write to Feishu
 node qianwen-source-extractor\run.js `
   --url "https://www.qianwen.com/share/chat/<share_id>?biz_id=ai_qwen" `
-  --natural-question NQ-001 `
+  --question-id NQ-001 `
   --base-token <feishu_app_token> --table-id <feishu_table_id>
 
 # Extract only
@@ -140,7 +142,7 @@ node qianwen-source-extractor\run.js `
 # Write only from existing JSON
 node qianwen-source-extractor\run.js `
   --write-only --sources sources.json `
-  --natural-question NQ-001 `
+  --question-id NQ-001 `
   --base-token <feishu_app_token> --table-id <feishu_table_id>
 ```
 
@@ -179,7 +181,7 @@ The JS extractor needs Chrome running with `--remote-debugging-port=9222` and th
 
 - `run.js` — Main entry. Parses args, calls extract-sources.js, then write-feishu.js. Supports `--extract-only`, `--write-only`, `--dry-run`.
 - `extract-sources.js` — Connects to Chrome via CDP (`connectOverCDP`), finds the Qianwen share tab by share_id, replays the share/info API from the page context, walks `data.session.record_list[].response_messages[].meta_data.sources[].content.list[]` (and the `multi_load[].content.docs[]` variant), and returns clean source objects with real URLs. It also returns `answer`, `thinkingContent`, and `searchEnabled` extracted from the same response (`response_messages[]` split by `mime_type`: `plan_cot/post` → 深度思考, `multi_load/iframe` etc. → answer with inline markers like `[(deep_think)]` / `[source_group_web_N]` stripped). These feed `--link-only`.
-- `write-feishu.js` — Builds Feishu rows (来源标题, 来源URL, 引用来源类型, 引用来源平台, 关联自然问句) and creates records via `lark-cli base +record-batch-create`.
+- `write-feishu.js` — Builds Feishu rows (来源标题, 来源URL, 引用来源类型, 引用来源平台, 问题ID) and creates records via `lark-cli base +record-batch-create`.
 - `package.json` — Declares `playwright-core` dependency.
 
 ## Operating Rules

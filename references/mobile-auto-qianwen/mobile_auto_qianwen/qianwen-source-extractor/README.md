@@ -47,7 +47,7 @@ qianwen-source-extractor/
 ```bash
 node qianwen-source-extractor/run.js \
   --url "https://www.qianwen.com/share/chat/<share_id>?biz_id=ai_qwen" \
-  --natural-question NQ-001 \
+  --question-id NQ-001 \
   --base-token <feishu_app_token> \
   --table-id <feishu_table_id>
 ```
@@ -67,7 +67,7 @@ node qianwen-source-extractor/run.js \
 node qianwen-source-extractor/run.js \
   --write-only \
   --sources sources.json \
-  --natural-question NQ-001 \
+  --question-id NQ-001 \
   --base-token <feishu_app_token> \
   --table-id <feishu_table_id>
 ```
@@ -85,7 +85,7 @@ node qianwen-source-extractor/write-feishu.js \
   --sources sources.json \
   --base-token <feishu_app_token> \
   --table-id <feishu_table_id> \
-  --natural-question NQ-001
+  --question-id NQ-001
 ```
 
 ## 参数说明
@@ -93,7 +93,8 @@ node qianwen-source-extractor/write-feishu.js \
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--url` | 千问分享页面URL（提取步骤必需） | - |
-| `--natural-question` | 关联自然问句ID（写回步骤必需） | - |
+| `--question-id` | 问题ID（写回步骤必需） | - |
+| `--natural-question` | `--question-id` 的兼容别名 | - |
 | `--base-token` | 飞书多维表格 app_token（写回步骤必需） | - |
 | `--table-id` | 飞书多维表格 table_id（写回步骤必需） | - |
 | `--cdp` | CDP端点URL | `http://127.0.0.1:9222` |
@@ -146,7 +147,7 @@ node qianwen-source-extractor/write-feishu.js \
 | 来源URL | `source.url` | 真实文章URL（非域名） |
 | 引用来源类型 | 推断 | 图文/视频（根据URL和内容推断） |
 | 引用来源平台 | `source.platform` | 平台名称（清洗后） |
-| 关联自然问句 | `--natural-question` 参数 | 由调用方传入 |
+| 问题ID | `--question-id` 参数 | 由调用方传入 |
 
 ## 技术要点
 
@@ -184,9 +185,9 @@ const { writeSources, buildRows } = require('./qianwen-source-extractor/write-fe
 // 写回飞书
 const result = writeSources(
   'UiE3bhcHRaCE01sh5Anc1AZanKd',  // base_token
-  'tblOa8d90WFOV7hG',  // table_id
+  'tblF1LsniY1BnOt3',  // table_id
   sourcesData,  // extractSources的返回值
-  'NQ-001',  // 关联自然问句
+  'NQ-001',  // 问题ID
   false  // dryRun
 );
 ```
@@ -214,7 +215,7 @@ async function main() {
   // 2. 写回飞书
   const result = writeSources(
     'UiE3bhcHRaCE01sh5Anc1AZanKd',
-    'tblOa8d90WFOV7hG',
+    'tblF1LsniY1BnOt3',
     sourcesData,
     'NQ-001'
   );

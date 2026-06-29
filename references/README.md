@@ -222,7 +222,7 @@ python -m mobile_auto_qianwen.runner `
 | `--task <path>` | Run from a task JSON file. |
 | `--base-url <url>` | Run from Feishu Base (alternative to `--task`). |
 | `--base-token`, `--table-id`, `--view-id` | Feishu Base location (alternative to `--base-url`). |
-| `--base-start`, `--base-end`, `--base-limit` | Row range to read from Feishu. |
+| `--base-start`, `--base-end`, `--base-limit` | Row range to read from Feishu. Input question text comes from `问题文本` (legacy `问题` fallback); missing `是否本次采集` defaults to selected. |
 | `--serial` / `--device` | ADB device serial. Required when multiple devices are online. |
 | `--adb` | Path to `adb.exe`. |
 | `--output` | Result JSON path. Use a unique value per parallel process. |
@@ -248,7 +248,7 @@ Full pipeline (extract + write to Feishu):
 ```powershell
 node qianwen-source-extractor\run.js `
   --url "https://www.qianwen.com/share/chat/<share_id>?biz_id=ai_qwen" `
-  --natural-question NQ-001 `
+  --question-id NQ-001 `
   --base-token <feishu_app_token> `
   --table-id <feishu_table_id>
 ```
@@ -268,7 +268,7 @@ Write only (from existing JSON):
 node qianwen-source-extractor\run.js `
   --write-only `
   --sources sources.json `
-  --natural-question NQ-001 `
+  --question-id NQ-001 `
   --base-token <feishu_app_token> `
   --table-id <feishu_table_id>
 ```
@@ -278,7 +278,8 @@ node qianwen-source-extractor\run.js `
 | Flag | Purpose |
 |------|---------|
 | `--url <url>` | Qianwen share URL (required for extract). |
-| `--natural-question <id>` | Natural question ID to associate (required for write). |
+| `--question-id <id>` | Question ID to associate (required for write). |
+| `--natural-question <id>` | Backward-compatible alias for `--question-id`. |
 | `--base-token <token>` | Feishu Bitable app_token (required for write). |
 | `--table-id <id>` | Feishu Bitable table_id (required for write). |
 | `--cdp <url>` | CDP endpoint. Default: `http://127.0.0.1:9222`. |
@@ -377,13 +378,14 @@ When `--writeback` is enabled (Feishu Base mode), the runner writes one row per 
 | Feishu Field | Source |
 |--------------|--------|
 | 采集账号 | `--collect-account` or `options.collectAccount` |
-| 自然问句 | The question text |
-| 关联自然问句 | The `关联自然问句` field from the Feishu input row |
+| 问题文本 | The question text |
+| 问题ID | The `问题ID` field from the Feishu input row; legacy input field `关联自然问句` is still accepted during migration |
 | 是否开启深度思考 | Whether deep-thinking was requested |
 | AI回答 | Captured answer text |
 | 深度思考 | Captured thinking content |
 | 是否触发联网 | Whether the answer used web sources |
 | 对话链接 | The captured share URL |
+| AI平台 | `千问移动端` |
 
 When `--extract-sources` is also enabled, the JS extractor writes one row per source to the Feishu source table with these fields:
 
@@ -393,13 +395,13 @@ When `--extract-sources` is also enabled, the JS extractor writes one row per so
 | 来源URL | `source.url` (real article URL, not just the domain) |
 | 引用来源类型 | `视频` or `图文` (inferred) |
 | 引用来源平台 | `source.platform` (cleaned) |
-| 关联自然问句 | The natural question ID passed to the extractor |
+| 问题ID | The question ID passed to the extractor |
 
 Built-in Feishu table ids (in `feishu_base.py`):
 
 ```python
-FEISHU_ANSWER_TABLE_ID = "tbljZPoVuHPuWxJZ"
-FEISHU_SOURCE_TABLE_ID = "tblOa8d90WFOV7hG"
+FEISHU_ANSWER_TABLE_ID = "tblaV1deA4L9hzze"
+FEISHU_SOURCE_TABLE_ID = "tblF1LsniY1BnOt3"
 ```
 
 ## How The Two Modules Cooperate

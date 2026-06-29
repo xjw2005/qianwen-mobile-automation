@@ -3,7 +3,7 @@
  * Write Qianwen sources to a Feishu Bitable.
  *
  * Fields written (aligned with DeepSeek source table):
- *   来源标题, 来源URL, 引用来源类型, 引用来源平台, 关联自然问句
+ *   来源标题, 来源URL, 引用来源类型, 引用来源平台, 问题ID
  */
 
 const fs = require('fs');
@@ -25,6 +25,7 @@ function parseArgs(argv) {
     else if (arg === '--base-token') args.baseToken = argv[++i];
     else if (arg === '--table-id') args.tableId = argv[++i];
     else if (arg === '--natural-question') args.naturalQuestion = argv[++i];
+    else if (arg === '--question-id') args.naturalQuestion = argv[++i];
     else if (arg === '--ai-platform') args.aiPlatform = argv[++i];
     else if (arg === '--dry-run') args.dryRun = true;
     else if (arg === '--help' || arg === '-h') {
@@ -46,7 +47,8 @@ Options:
   --sources <file>         JSON file from extract-sources.js (required)
   --base-token <token>     Feishu Bitable app_token (required)
   --table-id <id>          Feishu Bitable table_id (required)
-  --natural-question <id>  Natural question ID to associate (required)
+  --natural-question <id>  Question ID to associate (required)
+  --question-id <id>       Alias for --natural-question
   --ai-platform <name>     AI platform name. Default: 千问
   --dry-run                Print what would be written without writing
   --help                   Show this help
@@ -101,11 +103,11 @@ function createFeishuRecords(baseToken, tableId, fields, rows, dryRun = false) {
 /**
  * Build Feishu rows from sources data.
  * @param {object} data - Sources data from extract-sources.js
- * @param {string} naturalQuestion - Natural question ID
+ * @param {string} naturalQuestion - Question ID
  * @returns {object} { fields, rows }
  */
 function buildRows(data, naturalQuestion) {
-  const fields = ['来源标题', '来源URL', '引用来源类型', '引用来源平台', '关联自然问句'];
+  const fields = ['来源标题', '来源URL', '引用来源类型', '引用来源平台', '问题ID'];
   const rows = data.sources.map(source => [
     source.title || source.url || '',
     source.url || '',
@@ -121,7 +123,7 @@ function buildRows(data, naturalQuestion) {
  * @param {string} baseToken - Feishu Bitable app_token
  * @param {string} tableId - Feishu Bitable table_id
  * @param {object} sourcesData - Sources data from extract-sources.js
- * @param {string} naturalQuestion - Natural question ID
+ * @param {string} naturalQuestion - Question ID
  * @param {boolean} dryRun - If true, don't actually write
  * @returns {object} Write result from lark-cli
  */
@@ -139,13 +141,13 @@ async function main() {
   if (!args.sources) throw new Error('--sources is required');
   if (!args.baseToken) throw new Error('--base-token is required');
   if (!args.tableId) throw new Error('--table-id is required');
-  if (!args.naturalQuestion) throw new Error('--natural-question is required');
+  if (!args.naturalQuestion) throw new Error('--natural-question/--question-id is required');
 
   const data = JSON.parse(fs.readFileSync(args.sources, 'utf8'));
 
   console.log(`Writing ${data.sources.length} source rows to Feishu Bitable...`);
   console.log(`Base: ${args.baseToken}, Table: ${args.tableId}`);
-  console.log(`Natural question: ${args.naturalQuestion}`);
+  console.log(`Question ID: ${args.naturalQuestion}`);
   console.log('---');
   const { fields, rows } = buildRows(data, args.naturalQuestion);
   rows.forEach((row, i) => {
