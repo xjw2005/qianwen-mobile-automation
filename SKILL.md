@@ -1,6 +1,6 @@
 ---
 name: qianwen-mobile-automation
-description: Drives Qianwen Android via ADB to capture answers/share links, extracts real source URLs via a Node.js CDP script, and writes to Feishu. Invoke for Qianwen mobile runs or share-page source extraction. NEW: --link-only mode skips mobile thinking capture and pulls answer + 深度思考 + sources from the share-page share/info API in one shot; --feishu-config externalizes the Feishu answer/source table IDs into a JSON (switch environments without source edits).
+description: Drives Qianwen Android via ADB to capture answers/share links, extracts real source URLs via a Node.js CDP script, and writes to Feishu. Invoke for Qianwen mobile runs or share-page source extraction. NEW (default): local chat.db capture mode — when the device is rooted, the runner pulls the app's SQLite chat.db and extracts answer + 深度思考 + 来源 + 淘宝商品卡 links directly, with no share link, no Chrome, no MITM (this is the only path that works for 带货/e-commerce answers, which have no share button); auto-falls back to --link-only/mobile capture on non-rooted devices. Also: --link-only pulls answer + 深度思考 + sources from the share/info API in one shot; --feishu-config externalizes the Feishu answer/source table IDs into a JSON (switch environments without source edits).
 ---
 
 # Qianwen Mobile Automation
@@ -14,6 +14,18 @@ It covers two cooperating modules: a Python runner that drives the Qianwen Andro
 2. **跑移动端 (Qianwen Mobile Runner)** — Python package under `references/mobile-auto-qianwen/mobile_auto_qianwen/`. It drives the Qianwen Android app via ADB: opens chats, types questions with ADB Keyboard, waits for answers, captures deep-thinking content, taps the share button to copy the share link, and (optionally) invokes the JS extractor to write sources to Feishu.
 
 The Python runner is the orchestrator. With `--extract-sources`, it hands the captured share URL to the JS extractor; the JS extractor writes sources to Feishu directly.
+
+## Capture Modes (how answer/思考/来源/商品卡 are obtained)
+
+The runner drives the app the same way in every mode (open chat → type question → wait for answer). Only the **capture backend** differs. Mode is decided once per run, after a root probe:
+
+1. **Local chat.db (DEFAULT, requires root)** — `chatdb_extractor.py`. The app persists the full conversation at `/data/data/com.aliyun.tongyi/databases/chat.db`. The runner root-copies it (`su -c cp` → `adb pull`) and parses the just-asked turn, yielding **answer + 深度思考 + web 来源 + 淘宝商品卡 (title/price/销量/isP4p 广告标记/洗净链 `item.taobao.com/item.htm?id=`)**. No share button, no Chrome CDP, no MITM. **This is the only mode that recovers 带货 (e-commerce) answers**, because Qianwen hides the share button on those, so there is no `share_id` and the share/info path is dead.
+2. **--link-only (fallback when no root)** — answer + 深度思考 + 来源 from the share-page `share/info` API via the JS extractor. Requires `--extract-sources` + Chrome CDP. Cannot see 商品卡.
+3. **Mobile capture (fallback when no root and no --link-only)** — on-phone thinking capture + tap-share for the link. Legacy path.
+
+**Root gating:** DB mode is on by default. At task start the runner runs `check_root(adb)` (`su -c id` → `uid=0`). If rooted → DB capture. If **not** rooted → it automatically falls back to link-only/mobile exactly as configured by the other flags (nothing else changes). Force the old behavior with `--no-db-mode`.
+
+The turn is matched to the question by `chat_request.local_origin_input_text` (the user's exact input), and the runner polls chat.db until that turn's `local_request_status == 'complete'`.
 
 ## Core Workflow
 
@@ -117,6 +129,15 @@ When switching to a different Feishu Base, usually only the table IDs in the JSO
 
 Current Feishu input rows use `问题文本`, `问题ID`, and `是否开启深度思考`; `是否本次采集` is optional and defaults to `是` when absent. Legacy input fields `问题` and `关联自然问句` are still tolerated during migration.
 
+### Local chat.db Capture (default)
+
+- `--db-mode` — **(default, on)** When the device is rooted, capture answer/深度思考/来源/淘宝商品卡 directly from the app's local `chat.db`. No share link, no Chrome, no MITM — and the only mode that works for 带货 answers. Auto-falls back to link-only/mobile capture if the device has no root, so this flag is safe to leave on for a mixed fleet.
+- `--no-db-mode` — Disable local chat.db capture; force the previous link-only/mobile path.
+
+DB-mode result fields: `answer`, `thinkingContent`, `sources` (`method: "chat_db"`), and a new **`products`** array (`itemId`, `title`, `price` = displayed `priceShow.price`, `sales`, `shop`, `isAd` = `isP4p`, `image`, `cleanUrl`, `originUrl`), plus `captureMode: "chat_db"` and `debug.dbCapture` (mode/reqId/counts). Feishu writeback consumes answer/思考/来源 unchanged; `products` currently lives only in the result JSON.
+
+Standalone tool for ad-hoc pulls / inspection (not part of the runner): `qw_pull_extract.py` — `python qw_pull_extract.py --serial <dev> --baseline <db> --out <db>` prints new turns with products + clean links.
+
 ### Other Options
 
 - `--platform` — Platform name (default: "千问").
@@ -161,7 +182,8 @@ The JS extractor needs Chrome running with `--remote-debugging-port=9222` and th
 
 ### Python package (`references/mobile-auto-qianwen/mobile_auto_qianwen/`)
 
-- `runner.py` — CLI entry point. Parse args, build task, run sessions, write results, invoke JS extractor bridge.
+- `runner.py` — CLI entry point. Parse args, build task, run sessions, write results, invoke JS extractor bridge. Decides capture mode once per run (root probe → local chat.db vs. link-only/mobile fallback).
+- `chatdb_extractor.py` — **Default capture backend.** `check_root()`, `pull_chat_db()` (root `su -c cp` + `adb pull`), and a parser that walks `chat_message` per `req_id` to return answer/深度思考/来源/商品卡. Card price comes from `priceShow.price`; handles `taoassistant_single_product` and `taoassistant_fold_product_feeds` card types. `capture_via_db()` polls until the turn is `complete`.
 - `app.py` — UI automation: ensure_app, create_new_chat, enter_thinking_mode, send_question, wait_for_answer, click_view_all, capture_thinking_content, extract_answer_share_link.
 - `source_extractor_bridge.py` — Bridge to the JS extractor. Validates share URL, locates run.js, invokes with subprocess, retries with exponential backoff.
 - `feishu_base.py` — Feishu Base read/write via lark-cli. Builds tasks from Feishu rows, writes answer rows back. Writeback table IDs are read from `writeback_context` (supplied by `--feishu-config`/CLI) and fall back to the `FEISHU_ANSWER_TABLE_ID` / `FEISHU_SOURCE_TABLE_ID` constants; column structure is fixed.

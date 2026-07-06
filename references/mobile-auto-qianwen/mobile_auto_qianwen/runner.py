@@ -20,6 +20,7 @@ from .app import (
     wait_for_answer,
 )
 from .artifacts import save_state
+from .chatdb_extractor import capture_via_db, check_root
 from .feishu_base import build_task_from_feishu, build_feishu_writeback_rows_for_result, planned_writeback, write_feishu_result
 from .result_writer import write_result
 from .source_extractor_bridge import ExtractorOptions, run_source_extractor
@@ -72,6 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-quick", action="store_true")
     parser.add_argument("--link-only", action="store_true",
                         help="Skip mobile-side thinking capture; rely on --extract-sources to fetch answer/thinking/sources from the share page API.")
+    # —— 本地数据库捕获模式（默认）——
+    parser.add_argument("--db-mode", dest="db_mode", action="store_true", default=True,
+                        help="(default) When the device is rooted, capture answer/深度思考/来源/淘宝商品卡 "
+                             "directly from the app's local chat.db — no share link, no Chrome, no MITM. "
+                             "Automatically falls back to link-only/mobile capture if the device has no root.")
+    parser.add_argument("--no-db-mode", dest="db_mode", action="store_false",
+                        help="Disable local chat.db capture; use the previous link-only/mobile capture path.")
     parser.add_argument("--debug", action="store_true")
     # —— JS 来源提取器集成 ——
     parser.add_argument(
@@ -249,6 +257,53 @@ def run_question(
         debug["answerSamples"] = answer_result["samples"]
         if answer_result.get("nodes"):
             debug["answerXmlNodeCount"] = len(answer_result["nodes"])
+
+        # —— 本地数据库捕获模式（默认，需 root）——
+        # 命中时 answer/深度思考/来源/淘宝商品卡 全部来自 chat.db，
+        # 跳过 手机端思考捕获 + 分享链接 + JS 提取器（分享按钮在带货回答上不存在，这条路才通）。
+        if task["options"].get("dbCaptureActive"):
+            _ts_db = time.monotonic()
+            db_cap = capture_via_db(adb, question, output_dir)
+            timing["dbCapture"] = int((time.monotonic() - _ts_db) * 1000)
+            if db_cap.get("answer"):
+                answer = db_cap["answer"]
+            products = db_cap.get("products", [])
+            db_sources = [
+                {"index": i + 1, "title": s.get("title", ""), "url": s.get("url", ""),
+                 "platform": "", "method": "chat_db", "status": "success" if s.get("url") else "failed"}
+                for i, s in enumerate(db_cap.get("sources", []))
+            ]
+            db_status = db_cap.get("dbStatus")
+            status = "success" if (answer and db_status == "success") else ("partial" if answer else "failed")
+            debug["dbCapture"] = {
+                "status": db_status, "reqId": db_cap.get("reqId"), "mode": db_cap.get("mode"),
+                "answerLength": len(answer), "thinkingLength": len(db_cap.get("thinking", "")),
+                "productCount": len(products), "sourceCount": len(db_sources),
+                "videoCount": len(db_cap.get("videos", [])), "error": db_cap.get("error"),
+            }
+            timing["total"] = int((time.monotonic() - _t0) * 1000)
+            if run_logger:
+                run_logger.info(
+                    "[%s#%d] db-capture done: status=%s mode=%s answer_len=%d products=%d sources=%d",
+                    session_name, index, status, db_cap.get("mode"), len(answer), len(products), len(db_sources),
+                )
+            return {
+                "index": index,
+                "question": question,
+                "askedAt": asked_at,
+                "finishedAt": now_iso(),
+                "answer": answer,
+                "thinkingContent": db_cap.get("thinking", ""),
+                "sources": db_sources,
+                "products": products,
+                "videos": db_cap.get("videos", []),
+                "answerShareUrl": "",
+                "captureMode": "chat_db",
+                "sourceExtraction": {"status": "skipped", "reason": "db_mode"},
+                "status": status,
+                "error": db_cap.get("error") if not answer else None,
+                "debug": {**debug, "timing": timing},
+            }
 
         _ts_expert = time.monotonic()
         # Source extraction is intentionally disabled for the current Feishu path.
@@ -464,6 +519,24 @@ def run_task(task: dict, writeback_context: dict | None = None, source_extractor
     _ts = time.monotonic()
     ensure_result = ensure_app(adb)
     task_ensure_ms = int((time.monotonic() - _ts) * 1000)
+
+    # —— 捕获模式决策（每次任务一次）：默认走本地 chat.db，需 root；无 root 自动回退 ——
+    db_mode = bool(task.get("options", {}).get("dbMode", True))
+    db_active = False
+    if db_mode:
+        try:
+            db_active = check_root(adb)
+        except Exception as exc:  # noqa: BLE001 - root probe must never abort the run
+            run_logger.warning("root probe failed, falling back: %s", exc)
+            db_active = False
+    task.setdefault("options", {})["dbCaptureActive"] = db_active
+    if not db_mode:
+        run_logger.info("Capture mode: link-only/mobile (local chat.db disabled via --no-db-mode).")
+    elif db_active:
+        run_logger.info("Capture mode: LOCAL chat.db (root detected) — bypasses share link / Chrome / MITM.")
+    else:
+        run_logger.info("Capture mode: FALLBACK link-only/mobile (device not rooted; chat.db unavailable).")
+
     for session_index, session in enumerate(task["sessions"], start=1):
         session_out = {"sessionName": session["sessionName"], "newChat": session["newChat"], "thinking": session["thinking"], "meta": session.get("meta", {}), "results": []}
         for question_index, question in enumerate(session["questions"], start=1):
@@ -567,6 +640,7 @@ def main() -> None:
         task.setdefault("options", {})["sourceLimit"] = args.source_limit
     if args.link_only:
         task.setdefault("options", {})["linkOnly"] = True
+    task.setdefault("options", {})["dbMode"] = bool(args.db_mode)
     if args.debug:
         task.setdefault("options", {}).setdefault("debug", {})["enabled"] = True
     if args.extract_sources:
@@ -585,6 +659,7 @@ def main() -> None:
                 "source": loaded.get("source"),
                 "base": loaded.get("base"),
                 "summary": summarize_task(task),
+                "dbMode": task.get("options", {}).get("dbMode", True),
                 "generatedTask": loaded.get("task") if loaded.get("source") == "feishu-base" else None,
                 "skipped": loaded.get("skipped"),
                 "plannedWriteback": planned_writeback(task, args.writeback, args.mark_collected, answer_table_id=args.answer_table_id, source_table_id=args.source_table_id) if loaded.get("source") == "feishu-base" else None,
