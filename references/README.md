@@ -11,6 +11,15 @@ The Python runner is the orchestrator. When `--extract-sources` is enabled, it c
 
 ## Changelog / 变更说明
 
+### 2026-07-06 — 本地 chat.db 捕获模式（默认）
+
+- **New default capture mode: local `chat.db`.** When the device is **rooted**, the runner now captures answer + 深度思考 + web 来源 + **淘宝商品卡** directly from the app's SQLite database (`/data/data/com.aliyun.tongyi/databases/chat.db`) — no share link, no Chrome CDP, no MITM. New module `mobile_auto_qianwen/chatdb_extractor.py`. Same UI driving (open chat → type → wait); only the capture backend changes.
+- **Why it matters:** Qianwen deliberately hides the share button on **带货 (e-commerce) answers**, so there is no `share_id` and the share/info path (link-only) is dead for them. The local DB has the full turn regardless — including the Taobao product cards (`itemId`, displayed `priceShow.price`, 销量, `isP4p` 广告标记, cleaned `item.taobao.com/item.htm?id=` link).
+- **Root gating + auto-fallback:** DB mode is on by default (`--db-mode`). The runner probes root once per run (`su -c id` → `uid=0`). Rooted → DB capture. **Not rooted → automatically falls back to `--link-only`/mobile capture exactly as configured** — nothing else changes. Force the old behavior with `--no-db-mode`. `--link-only` is untouched and remains the recommended non-root path.
+- **New result fields (DB mode):** `products[]` (see Output Contract), `captureMode: "chat_db"`, `debug.dbCapture`. `sources[]` use `method: "chat_db"`. Feishu writeback (answer/思考/来源) is unchanged.
+- **Standalone tool:** `qw_pull_extract.py` for ad-hoc DB pulls/inspection outside the runner.
+- **Verified end-to-end** on two rooted devices: 4 带货 questions each returned 3–4 product cards with working cleaned Taobao links. **MITM-by-proxy was tested and does NOT work** for Qianwen's core API (Alibaba AMDC/httpDNS direct-connect bypasses the HTTP proxy); root + chat.db is the reliable path.
+
 ### 2026-06-24 — `--link-only` + 飞书表 ID 外置
 
 - **New `--link-only` mode** (mirrors the DeepSeek runner). Skips mobile-side thinking capture; the phone only asks the question and grabs the share link, then answer + 深度思考 + sources are pulled from the share page in one shot. Requires `--extract-sources`. The share-page content overrides the mobile-captured answer/thinking.
@@ -27,6 +36,7 @@ references/
       adb_client.py                 # ADB wrapper
       app.py                        # UI automation (tap, swipe, share, thinking capture)
       artifacts.py                  # state snapshots
+      chatdb_extractor.py           # DEFAULT capture: root-pull chat.db → answer/思考/来源/商品卡
       constants.py                  # package name, IME, UI text constants
       feishu_base.py                # Feishu Base read/write via lark-cli
       ocr.py                        # Windows Media.Ocr wrapper for screenshots
@@ -148,6 +158,21 @@ If live runs fail with `adb_keyboard_not_installed`, install the APK and set the
 On some emulator ROMs, `ime enable` and `ime set` are blocked by policy.
 In that case, use the Settings UI plus `adb shell dumpsys input_method` to confirm the service is active.
 
+## Device Root (For Local chat.db Mode — default)
+
+The default capture mode reads the app's private database, which requires root:
+
+```powershell
+adb -s <serial> shell "su -c id"
+```
+
+- `uid=0(root) ...` → local chat.db mode is available. The runner will use it automatically; **you do NOT need Chrome CDP or a share link.**
+- Anything else (no `su`, permission denied) → the device is not rooted. The runner **auto-falls back** to `--link-only`/mobile capture (set up Chrome CDP below). No flags needed; DB mode simply disengages.
+
+Chrome CDP setup below is only required for the non-root `--link-only` fallback and the standalone JS extractor. On a rooted device running default DB mode, you can skip it entirely.
+
+> **Note on non-root capture:** plain HTTP-proxy MITM does **not** capture Qianwen's chat API / product cards — Alibaba's AMDC/httpDNS stack connects to direct IPs and bypasses the system proxy (verified). For non-root devices, use `--link-only` (share/info API via Chrome), accepting that 带货 answers with no share button cannot be recovered without root.
+
 ## Chrome CDP Setup (For JS Source Extractor)
 
 The JS extractor needs a Chrome instance running with remote debugging so it can replay the share/info API from the page context (cookies + origin).
@@ -235,6 +260,8 @@ python -m mobile_auto_qianwen.runner `
 | `--extractor-timeout` | Per-attempt timeout (seconds) for the JS extractor. Default: 120. |
 | `--extractor-retries` | Max retries for the JS extractor. Default: 2. |
 | `--source-base-token`, `--source-table-id` | Feishu source table location. Defaults to the input base token and the built-in Qianwen source table id. |
+| `--db-mode` | **(default, on)** Capture answer/深度思考/来源/淘宝商品卡 from the app's local `chat.db` when the device is rooted (no share link / Chrome / MITM; the only mode that works for 带货 answers). Auto-falls back to link-only/mobile capture on non-rooted devices. |
+| `--no-db-mode` | Disable local chat.db capture; force the previous link-only/mobile path. |
 | `--force-quick` | Disable deep-thinking for every question. |
 | `--debug` | Keep screenshots, currentFocus, and XML artifacts. |
 | `--dry-run` | Print the planned task and writeback without running. |
@@ -364,10 +391,12 @@ The runner writes a result JSON to `task["output"]` (or `--output`). Per-questio
 | `askedAt` / `finishedAt` | ISO timestamps. |
 | `answer` | Captured answer text. |
 | `thinkingContent` | Captured deep-thinking text (empty if quick mode). |
-| `sources` | Source list. When the JS extractor runs, this is a summary of what it wrote to Feishu. |
-| `answerShareUrl` | The Qianwen share URL captured on the phone. |
-| `sourceExtraction` | JS extractor status: `status`, `ok`, `sourceCount`, `extractOk`, `feishuWriteOk`, `attempts`, `outputFile`, `error`. |
-| `status` | `success` (answer + thinking + sources + share all ok), `partial` (answer exists but something is missing), `failed` (no answer). |
+| `sources` | Source list. When the JS extractor runs, this is a summary of what it wrote to Feishu. In DB mode each entry has `method: "chat_db"`. |
+| `products` | **(DB mode only)** Taobao product cards from the 带货 answer: `itemId`, `title`, `price` (displayed `priceShow.price`), `sales`, `shop`, `isAd` (`isP4p`), `image`, `cleanUrl` (`item.taobao.com/item.htm?id=`), `originUrl` (the raw `a.m.taobao.com` link with Qianwen `ttid`/`sid` params). Empty/absent in non-DB modes. |
+| `captureMode` | `"chat_db"` when the local DB path produced the result; absent otherwise. |
+| `answerShareUrl` | The Qianwen share URL captured on the phone. Empty in DB mode (no share link needed). |
+| `sourceExtraction` | JS extractor status: `status`, `ok`, `sourceCount`, `extractOk`, `feishuWriteOk`, `attempts`, `outputFile`, `error`. `{status: "skipped", reason: "db_mode"}` in DB mode. |
+| `status` | `success` (answer + thinking + sources + share all ok; in DB mode: answer captured and turn `complete`), `partial` (answer exists but something is missing), `failed` (no answer). |
 | `error` | Error reason when status is not `success`. |
 | `debug` | Timing, snapshots, and notes. Includes `timing` (ms per phase) and `artifactsDir`. |
 
@@ -478,12 +507,13 @@ Fix the row range. `--base-start` and `--base-end` are 1-based and inclusive.
 
 1. `adb devices` — confirm the device is online.
 2. `adb shell settings get secure default_input_method` — confirm `com.android.adbkeyboard/.AdbIME`.
-3. `Invoke-RestMethod http://127.0.0.1:9222/json/version` — confirm Chrome CDP is running.
-4. `python -m mobile_auto_qianwen.runner --task tasks\qianwen_sample.json --dry-run` — validate the task.
-5. `python -m mobile_auto_qianwen.runner --task tasks\qianwen_sample.json --debug` — live run with artifacts.
-6. If source extraction fails, run the JS extractor standalone with `--extract-only --output sources.json` and inspect the JSON.
-7. If UI selectors fail, inspect `results/snapshots/<session>-<index>-<stamp>/*.xml` and compare resource ids in `mobile_auto_qianwen/constants.py`.
-8. For parallel runs, give each process a distinct `--serial` and `--output`.
+3. `adb -s <serial> shell "su -c id"` — if it returns `uid=0`, the default local chat.db mode is available (no Chrome/CDP needed). If it errors, the run auto-falls back to `--link-only`/mobile capture — set up Chrome CDP (step 4) for that path.
+4. `Invoke-RestMethod http://127.0.0.1:9222/json/version` — confirm Chrome CDP is running (only needed for the non-root `--link-only` fallback / standalone JS extractor).
+5. `python -m mobile_auto_qianwen.runner --task tasks\qianwen_sample.json --dry-run` — validate the task.
+6. `python -m mobile_auto_qianwen.runner --task tasks\qianwen_sample.json --debug` — live run with artifacts. In DB mode the log prints `Capture mode: LOCAL chat.db ...`; check `debug.dbCapture` in the result JSON.
+7. If source extraction fails (non-root path), run the JS extractor standalone with `--extract-only --output sources.json` and inspect the JSON.
+8. If UI selectors fail, inspect `results/snapshots/<session>-<index>-<stamp>/*.xml` and compare resource ids in `mobile_auto_qianwen/constants.py`.
+9. For parallel runs, give each process a distinct `--serial` and `--output`.
 
 ## Operating Rules
 
