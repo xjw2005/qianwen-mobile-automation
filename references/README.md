@@ -224,8 +224,8 @@ Feishu Base mode (read questions from Feishu, write answers back):
 
 ```powershell
 python -m mobile_auto_qianwen.runner `
-  --base-url "https://yuoukuajing.feishu.cn/base/UiE3bhcHRaCE01sh5Anc1AZanKd?table=tblXZ8vq7SouTIuu&view=vewZsJsX7y" `
-  --base-limit 3 `
+  --base-url "https://yuoukuajing.feishu.cn/base/OFyJb6hiGaOQeqs5G9ycqLEhnoc?table=tblTZyTxk0uQUjgA&view=vewqNWpvrv" `
+  --base-start 1 --base-end 3 `
   --source-limit 99 `
   --writeback `
   --lark-cli "<lark-cli-path>" `

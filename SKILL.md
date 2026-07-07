@@ -51,7 +51,7 @@ Feishu Base mode (read questions from Feishu, write answers back):
 
 ```powershell
 python -m mobile_auto_qianwen.runner `
-  --base-url "https://yuoukuajing.feishu.cn/base/UiE3bhcHRaCE01sh5Anc1AZanKd?table=tblXZ8vq7SouTIuu&view=vewZsJsX7y" `
+  --base-url "https://yuoukuajing.feishu.cn/base/OFyJb6hiGaOQeqs5G9ycqLEhnoc?table=tblTZyTxk0uQUjgA&view=vewqNWpvrv" `
   --base-start 1 --base-end 10 --source-limit 99 --writeback `
   --lark-cli "<lark-cli-path>" `
   --adb "<adb-path>" `
@@ -135,7 +135,7 @@ Current Feishu input rows use `问题探针文本` (legacy `问题文本`/`问�
 - `--db-mode` — **(default, on)** When the device is rooted, capture answer/深度思考/来源/淘宝商品卡 directly from the app's local `chat.db`. No share link, no Chrome, no MITM — and the only mode that works for 带货 answers. Auto-falls back to link-only/mobile capture if the device has no root, so this flag is safe to leave on for a mixed fleet.
 - `--no-db-mode` — Disable local chat.db capture; force the previous link-only/mobile path.
 
-DB-mode result fields: `answer`, `thinkingContent`, `sources` (`method: "chat_db"`), and a new **`products`** array (`itemId`, `title`, `price` = displayed `priceShow.price`, `sales`, `shop`, `isAd` = `isP4p`, `image`, `cleanUrl`, `originUrl`), plus `captureMode: "chat_db"` and `debug.dbCapture` (mode/reqId/counts). With `--writeback`, `products` are written to the Feishu source table as 商品卡 rows (one per card, keyed by `探真单值编码`).
+DB-mode result fields: `answer`, `thinkingContent`, `sources` (`method: "chat_db"`), and a new **`products`** array (`itemId`, `title`, `price` = displayed `priceShow.price`, `sales`, `shop`, `isAd` = `isP4p`, `image`, `cleanUrl`, `originUrl`), plus `captureMode: "chat_db"` and `debug.dbCapture` (mode/reqId/counts). With `--writeback`, `products` are written to the Feishu source table as 商品卡 rows (one per card, keyed by `探针单值编码`).
 
 Standalone tool for ad-hoc pulls / inspection (not part of the runner): `qw_pull_extract.py` — `python qw_pull_extract.py --serial <dev> --baseline <db> --out <db>` prints new turns with products + clean links.
 
