@@ -76,7 +76,11 @@ class AdbClient:
         return self.command(["shell", "settings", "get", "secure", "default_input_method"], check=False).stdout.strip()
 
     def set_ime(self, ime: str) -> None:
-        self.command(["shell", "ime", "set", ime])
+        result = self.command(["shell", "ime", "set", ime], check=False)
+        output = (result.stdout or "") + (result.stderr or "")
+        # 部分模拟器 ROM（如 MuMu）禁用 ime set；输入法已启用时可直接改 secure settings
+        if result.returncode != 0 or "disabled" in output:
+            self.command(["shell", "settings", "put", "secure", "default_input_method", ime])
 
     def dump_xml(self) -> str:
         remote = "/sdcard/mobile-auto-qianwen-window.xml"

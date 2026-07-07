@@ -1,25 +1,33 @@
 import json
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .time_utils import now_iso, stamp
 
 
-FEISHU_ANSWER_TABLE_ID = "tblaV1deA4L9hzze"
-FEISHU_SOURCE_TABLE_ID = "tblF1LsniY1BnOt3"
-DEFAULT_PLATFORM = "千问移动端"
+FEISHU_ANSWER_TABLE_ID = "tblhzxIjigHfhlGd"
+FEISHU_SOURCE_TABLE_ID = "tbld8YZTYFajQFbT"
+# AI平台 是单选字段，选项为 Qwen网页端/Qwen移动端/豆包网页端/豆包移动端/DeepSeek网页端/DeepSeek移动端/元宝网页端
+DEFAULT_PLATFORM = "Qwen移动端"
 DEFAULT_COLLECT_ACCOUNT = "18870501682"
+# 抓取轮次 在飞书表中是文本字段；可用 --capture-round / feishu-config captureRound 自定义
+DEFAULT_CAPTURE_ROUND = "NO.1"
+# 探针单值编码：问题来源表、写回主表、参考来源表三方共用的对应键。
+TANZHEN_CODE_FIELD = "探针单值编码"
 QUESTION_ID_FIELD = "问题ID"
 LEGACY_QUESTION_ID_FIELD = "关联自然问句"
 INPUT_QUESTION_ID_FIELDS = (QUESTION_ID_FIELD, LEGACY_QUESTION_ID_FIELD)
-QUESTION_TEXT_FIELDS = ("问题文本", "问题")
+QUESTION_TEXT_FIELDS = ("问题探针文本", "问题文本", "问题")
 THINKING_FIELD = "是否开启深度思考"
 COLLECT_NOW_FIELD = "是否本次采集"
 AI_PLATFORM_FIELD = "AI平台"
-ANSWER_WRITEBACK_FIELDS = ["采集账号", "问题文本", QUESTION_ID_FIELD, "是否开启深度思考", "AI回答", "深度思考", "是否触发联网", "对话链接", AI_PLATFORM_FIELD]
-SOURCE_WRITEBACK_FIELDS = ["来源标题", "来源URL", "引用来源类型", "引用来源平台", QUESTION_ID_FIELD]
+ANSWER_WRITEBACK_FIELDS = ["采集账号", "问题探针文本", TANZHEN_CODE_FIELD, "抓取轮次", "关键词", "AI回答", "是否触发联网", "分享对话链接", AI_PLATFORM_FIELD, "抓取日期"]
+SOURCE_WRITEBACK_FIELDS = [TANZHEN_CODE_FIELD, "映射淘宝店铺", "引用来源平台", "来源类型", "来源URL", "来源标题", "来源摘取日期"]
+SOURCE_PLATFORM_TAOBAO = "淘宝"
+SOURCE_TYPE_PRODUCT_CARD = "商品卡"
 ANSWER_PRELUDE_PREFIXES = ("检索", "对比", "调研", "查询", "分析", "收集", "整合")
 ANSWER_START_MARKERS = (
     "适度水解奶粉主要",
@@ -44,8 +52,10 @@ def normalize_ai_platform(value) -> str:
     aliases = {
         "豆包": "豆包移动端",
         "doubao": "豆包移动端",
-        "千问": "千问移动端",
-        "qianwen": "千问移动端",
+        "千问": "Qwen移动端",
+        "千问移动端": "Qwen移动端",
+        "qianwen": "Qwen移动端",
+        "qwen": "Qwen移动端",
         "DeepSeek": "DeepSeek移动端",
         "deepseek": "DeepSeek移动端",
     }
@@ -69,11 +79,28 @@ def clean_answer_for_writeback(value) -> str:
     text = clean_text(value)
     if not text:
         return ""
+    # chat.db 里的回答 markdown 带内联卡片占位符，如 [(tao_assistant_xxx)]、
+    # [(video_note_list_1)]、[(deep_think)]、[source_group_web_3]，写回前剔除
+    text = re.sub(r"\[\([A-Za-z0-9_]+\)\]|\[source_group_web_\d+\]", "", text)
     if text.startswith(ANSWER_PRELUDE_PREFIXES):
         starts = [index for marker in ANSWER_START_MARKERS if (index := text.find(marker, 10)) > 0]
         if starts:
             text = text[min(starts):]
     return clean_text(text)
+
+
+def capture_date_str() -> str:
+    """抓取日期/来源摘取日期：写回时刻，精确到分钟（飞书表中为文本字段）。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def tanzhen_code_value(value) -> str:
+    """探针单值编码透传（目标字段为文本，数值也转字符串）。"""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (int, float)):
+        return str(value)
+    return clean_text(value)
 
 
 def is_yes(value) -> bool:
@@ -173,7 +200,7 @@ def list_feishu_records_page(base: dict, offset: int, limit: int, lark_cli: str 
     ]
     if base.get("viewId"):
         args.extend(["--view-id", base["viewId"]])
-    for field_name in [*QUESTION_TEXT_FIELDS, *INPUT_QUESTION_ID_FIELDS, THINKING_FIELD, COLLECT_NOW_FIELD]:
+    for field_name in [*QUESTION_TEXT_FIELDS, *INPUT_QUESTION_ID_FIELDS, TANZHEN_CODE_FIELD, THINKING_FIELD, COLLECT_NOW_FIELD]:
         args.extend(["--field-id", field_name])
     args.extend([
         "--offset",
@@ -234,11 +261,13 @@ def build_task_from_feishu(args) -> dict:
         if row_map:
             question = first_row_value(row_map, QUESTION_TEXT_FIELDS)
             linked_natural_question = first_row_value(row_map, INPUT_QUESTION_ID_FIELDS)
+            tanzhen_code = row_map.get(TANZHEN_CODE_FIELD)
             thinking = row_map.get(THINKING_FIELD)
             collect_now = row_map.get(COLLECT_NOW_FIELD, "是")
         else:
             padded = [*row, None, None, None]
             question, linked_natural_question, thinking, collect_now = padded[:4]
+            tanzhen_code = None
             if collect_now is None:
                 collect_now = "是"
         record_id = record_ids[index] if index < len(record_ids) else None
@@ -267,6 +296,7 @@ def build_task_from_feishu(args) -> dict:
                 "viewId": base.get("viewId"),
                 "naturalQuestion": question_text,
                 "linkedNaturalQuestion": clean_text(linked_natural_question),
+                "tanzhenCode": tanzhen_code_value(tanzhen_code),
                 "fullQuestion": question_text,
                 "thinking": row_thinking,
                 "platform": platform,
@@ -334,7 +364,7 @@ def update_feishu_task_rows(base: dict, record_ids: list[str], lark_cli: str = "
     return run_json_command_with_payload(lark_cli, args, {"record_id_list": record_ids, "patch": {"是否本次采集": "否"}})
 
 
-def build_feishu_writeback_rows_for_result(source_session: dict, result: dict, collect_account: str | None = None) -> dict:
+def build_feishu_writeback_rows_for_result(source_session: dict, result: dict, collect_account: str | None = None, capture_round: str | None = None) -> dict:
     """Build Feishu answer rows for a completed question result."""
     answer_rows = []
     source_rows = []
@@ -347,46 +377,75 @@ def build_feishu_writeback_rows_for_result(source_session: dict, result: dict, c
     questions = source_session.get("questions") or []
     first_question = questions[0].get("text") if questions and isinstance(questions[0], dict) else (questions[0] if questions else "")
     natural_question = clean_text(meta.get("naturalQuestion")) or clean_text(first_question)
-    linked_natural_question = clean_text(meta.get("linkedNaturalQuestion"))
+    tanzhen_code = tanzhen_code_value(meta.get("tanzhenCode"))
     platform = normalize_ai_platform(meta.get("platform") or DEFAULT_PLATFORM)
     # 是否触发联网：只要本次打开了思考面板就填“是”
     # 分支 A：点击“查看全部”进入思考详情页（debug.clickViewAll.ok）
     # 分支 B：答案页内联展开思考（debug.thinkingCapture.expansion.ok）
+    # 分支 C：chat.db 捕获模式没有思考面板交互，以回答是否携带 web 来源为准
     debug = result.get("debug") or {}
     thinking_capture = debug.get("thinkingCapture") or {}
     expansion = thinking_capture.get("expansion") or {}
     opened_via_view_all = bool((debug.get("clickViewAll") or {}).get("ok"))
     opened_inline = bool(expansion.get("ok"))
-    thinking_panel_opened = opened_via_view_all or opened_inline
+    db_has_web_sources = result.get("captureMode") == "chat_db" and bool(result.get("sources"))
+    web_triggered = opened_via_view_all or opened_inline or db_has_web_sources
+    # 顺序必须与 ANSWER_WRITEBACK_FIELDS 一一对应
     answer_rows.append([
         clean_text(collect_account or DEFAULT_COLLECT_ACCOUNT),
         natural_question,
-        linked_natural_question,
-        "是" if (source_session.get("thinking") or meta.get("thinking")) else "否",
-        cleaned_answer,
+        tanzhen_code,
+        clean_text(capture_round) or DEFAULT_CAPTURE_ROUND,
         clean_thinking_for_writeback(result.get("thinkingContent")),
-        "是" if thinking_panel_opened else "否",
+        cleaned_answer,
+        "是" if web_triggered else "否",
         clean_text(result.get("answerShareUrl")),
         platform,
+        capture_date_str(),
     ])
+    # 参考来源表：chat.db 抓到的淘宝商品卡，一卡一行（顺序对应 SOURCE_WRITEBACK_FIELDS）
+    extract_date = capture_date_str()
+    for product in result.get("products") or []:
+        item_id = clean_text(product.get("itemId"))
+        if not item_id:
+            continue
+        source_rows.append([
+            tanzhen_code,
+            item_id,
+            SOURCE_PLATFORM_TAOBAO,
+            SOURCE_TYPE_PRODUCT_CARD,
+            product.get("cleanUrl") or f"https://item.taobao.com/item.htm?id={item_id}",
+            clean_text(product.get("title")),
+            extract_date,
+        ])
     return {"answerRows": answer_rows, "sourceRows": source_rows}
 
 
 def write_feishu_result(writeback_context: dict, source_session: dict, result: dict) -> dict:
     """Write answer rows and summarize source extraction for auditing."""
-    rows = build_feishu_writeback_rows_for_result(source_session, result, writeback_context.get("collectAccount"))
+    rows = build_feishu_writeback_rows_for_result(source_session, result, writeback_context.get("collectAccount"), writeback_context.get("captureRound"))
     base = writeback_context["base"]
     lark_cli = writeback_context.get("larkCli", "lark-cli")
     dry_run = bool(writeback_context.get("dryRun"))
     answer_table_id = writeback_context.get("answerTableId") or FEISHU_ANSWER_TABLE_ID
     source_table_id = writeback_context.get("sourceTableId") or FEISHU_SOURCE_TABLE_ID
     answer_result = create_feishu_records(base, answer_table_id, ANSWER_WRITEBACK_FIELDS, rows["answerRows"], lark_cli, dry_run)
-    # 来源记录由 qianwen-source-extractor JS 脚本直接写入飞书来源表，
-    # Python 端不再重复写源；这里仅记录 JS 提取结果以便审计与追踪。
+    # 参考来源表：chat.db 模式抓到的淘宝商品卡由 Python 直接写入；
+    # 非 db 模式的 web 来源仍由 qianwen-source-extractor JS 脚本写入，这里仅审计。
     js_extraction = result.get("sourceExtraction") or {}
     js_source_count = int(js_extraction.get("sourceCount", 0))
     js_write_ok = js_extraction.get("feishuWriteOk")
-    if js_extraction.get("status") == "success":
+    if rows["sourceRows"]:
+        source_result = create_feishu_records(base, source_table_id, SOURCE_WRITEBACK_FIELDS, rows["sourceRows"], lark_cli, dry_run)
+        source_result = {
+            "skipped": False,
+            "reason": "product_cards_from_chat_db",
+            "tableId": source_table_id,
+            "count": len(rows["sourceRows"]),
+            "createResult": source_result,
+        }
+        js_source_count = len(rows["sourceRows"])
+    elif js_extraction.get("status") == "success":
         source_result = {
             "skipped": False,
             "reason": "written_by_js_extractor",
@@ -447,14 +506,15 @@ def planned_writeback(task: dict, enabled: bool, mark_collected: bool = False, a
     source_table = (source_table_id or "").strip() or FEISHU_SOURCE_TABLE_ID
     return {
         "enabled": bool(enabled),
-        "action": "create Qianwen answer records; source records written by JS extractor" if extractor_enabled else "create Qianwen answer records only; source writeback is disabled",
+        "action": "create Qianwen answer records; 淘宝商品卡 source records written from chat.db products"
+                  + ("; web source records written by JS extractor" if extractor_enabled else ""),
         "answerTableId": answer_table,
-        "sourceTableId": source_table if extractor_enabled else None,
+        "sourceTableId": source_table,
         "markCollected": bool(mark_collected),
         "markCollectedField": "是否本次采集",
         "markCollectedValue": "否",
         "recordIds": record_ids,
         "answerFields": ANSWER_WRITEBACK_FIELDS,
-        "sourceFields": SOURCE_WRITEBACK_FIELDS if extractor_enabled else [],
-        "sourceWriter": "qianwen-source-extractor (JS)" if extractor_enabled else None,
+        "sourceFields": SOURCE_WRITEBACK_FIELDS,
+        "sourceWriter": "python (chat.db 商品卡)" + (" + qianwen-source-extractor (JS web来源)" if extractor_enabled else ""),
     }

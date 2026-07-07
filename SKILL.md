@@ -1,4 +1,4 @@
----
+﻿---
 name: qianwen-mobile-automation
 description: Drives Qianwen Android via ADB to capture answers/share links, extracts real source URLs via a Node.js CDP script, and writes to Feishu. Invoke for Qianwen mobile runs or share-page source extraction. NEW (default): local chat.db capture mode — when the device is rooted, the runner pulls the app's SQLite chat.db and extracts answer + 深度思考 + 来源 + 淘宝商品卡 links directly, with no share link, no Chrome, no MITM (this is the only path that works for 带货/e-commerce answers, which have no share button); auto-falls back to --link-only/mobile capture on non-rooted devices. Also: --link-only pulls answer + 深度思考 + sources from the share/info API in one shot; --feishu-config externalizes the Feishu answer/source table IDs into a JSON (switch environments without source edits).
 ---
@@ -111,6 +111,7 @@ When switching to a different Feishu Base, usually only the table IDs in the JSO
 - `--writeback` — Write results back to Feishu.
 - `--mark-collected` — Mark Feishu rows "是否本次采集" as "否" after writeback.
 - `--collect-account` — Override "采集账号" field in Feishu.
+- `--capture-round` — Override "抓取轮次" field in Feishu (default `NO.1`; config key `captureRound`).
 - `--lark-cli` — lark-cli executable path.
 - `--feishu-config` / `--writeback-config` — JSON file that externalizes the Feishu input base + answer/source writeback table IDs. Loaded at startup and applied as defaults; **CLI flags always override JSON**. Template: `references/mobile-auto-qianwen/configs/feishu-qianwen-example.json`. Only table IDs change between environments — field names and column structure stay fixed (see `feishu_base.py` `ANSWER_WRITEBACK_FIELDS` / `SOURCE_WRITEBACK_FIELDS`).
 - `--answer-table-id` — Feishu table_id for the answer writeback table (defaults to the built-in Qianwen answer table).
@@ -127,14 +128,14 @@ When switching to a different Feishu Base, usually only the table IDs in the JSO
 - `--source-limit` — How many sources to collect per question (default: 2).
 - `--link-only` — Skip mobile-side thinking capture; take **answer + 深度思考 + sources** from the share-page `share/info` API instead. **Requires `--extract-sources`.** Faster and more complete: the API content is the full conversation, not limited to the mobile viewport. The API answer/thinking override the mobile-captured values.
 
-Current Feishu input rows use `问题文本`, `问题ID`, and `是否开启深度思考`; `是否本次采集` is optional and defaults to `是` when absent. Legacy input fields `问题` and `关联自然问句` are still tolerated during migration.
+Current Feishu input rows use `问题探针文本` (legacy `问题文本`/`问题`) and `探针单值编码` (shared key linking the input row, answer row, and source rows); the current input table has no `是否开启深度思考`/`是否本次采集` columns (defaults: thinking off, all rows selected — do NOT use `--mark-collected` against it). Answer writeback fields: `采集账号`, `问题探针文本`, `探针单值编码`, `抓取轮次` (text, default `NO.1`, customizable via `--capture-round`), `关键词` (深度思考内容), `AI回答`, `是否触发联网` (select 是/否), `分享对话链接`, `AI平台` (select; Qianwen → `Qwen移动端`), `抓取日期` (text `YYYY-MM-DD HH:MM`). Source writeback (Taobao product cards from chat.db, written by Python): `探针单值编码`, `映射淘宝店铺` (itemId), `引用来源平台`=`淘宝`, `来源类型`=`商品卡` (select), `来源URL` (full `item.taobao.com` link), `来源标题`, `来源摘取日期`. All field names live in `feishu_base.py` `ANSWER_WRITEBACK_FIELDS`/`SOURCE_WRITEBACK_FIELDS`.
 
 ### Local chat.db Capture (default)
 
 - `--db-mode` — **(default, on)** When the device is rooted, capture answer/深度思考/来源/淘宝商品卡 directly from the app's local `chat.db`. No share link, no Chrome, no MITM — and the only mode that works for 带货 answers. Auto-falls back to link-only/mobile capture if the device has no root, so this flag is safe to leave on for a mixed fleet.
 - `--no-db-mode` — Disable local chat.db capture; force the previous link-only/mobile path.
 
-DB-mode result fields: `answer`, `thinkingContent`, `sources` (`method: "chat_db"`), and a new **`products`** array (`itemId`, `title`, `price` = displayed `priceShow.price`, `sales`, `shop`, `isAd` = `isP4p`, `image`, `cleanUrl`, `originUrl`), plus `captureMode: "chat_db"` and `debug.dbCapture` (mode/reqId/counts). Feishu writeback consumes answer/思考/来源 unchanged; `products` currently lives only in the result JSON.
+DB-mode result fields: `answer`, `thinkingContent`, `sources` (`method: "chat_db"`), and a new **`products`** array (`itemId`, `title`, `price` = displayed `priceShow.price`, `sales`, `shop`, `isAd` = `isP4p`, `image`, `cleanUrl`, `originUrl`), plus `captureMode: "chat_db"` and `debug.dbCapture` (mode/reqId/counts). With `--writeback`, `products` are written to the Feishu source table as 商品卡 rows (one per card, keyed by `探真单值编码`).
 
 Standalone tool for ad-hoc pulls / inspection (not part of the runner): `qw_pull_extract.py` — `python qw_pull_extract.py --serial <dev> --baseline <db> --out <db>` prints new turns with products + clean links.
 

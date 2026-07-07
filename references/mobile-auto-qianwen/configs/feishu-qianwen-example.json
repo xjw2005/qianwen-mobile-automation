@@ -1,10 +1,11 @@
 {
   "input": {
-    "baseUrl": "https://yuoukuajing.feishu.cn/base/HdDPbhFghaDQgSsqLZhcIQxqnNf?table=tblmCFnvnoieKXB2"
+    "baseUrl": "https://yuoukuajing.feishu.cn/base/OFyJb6hiGaOQeqs5G9ycqLEhnoc?table=tblTZyTxk0uQUjgA&view=vewqNWpvrv"
   },
   "writeback": {
-    "answerTableId": "tblaV1deA4L9hzze",
-    "sourceTableId": "tblF1LsniY1BnOt3"
+    "answerTableId": "tblhzxIjigHfhlGd",
+    "sourceTableId": "tbld8YZTYFajQFbT"
   },
-  "collectAccount": "18870501682"
+  "collectAccount": "18870501682",
+  "captureRound": "NO.1"
 }

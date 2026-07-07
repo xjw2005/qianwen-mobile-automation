@@ -1,4 +1,4 @@
-# Qianwen Mobile Automation Migration README
+﻿# Qianwen Mobile Automation Migration README
 
 This reference explains how to move the entire Qianwen mobile automation integration to another agent or computer and run it with minimal context loss.
 
@@ -10,6 +10,14 @@ The integration has **two cooperating modules**:
 The Python runner is the orchestrator. When `--extract-sources` is enabled, it captures the answer share link on the phone, hands it to the JS extractor, and the JS extractor writes the sources to Feishu.
 
 ## Changelog / 变更说明
+
+### 2026-07-07 — 飞书新表字段适配（探针单值编码 / 商品卡来源写回）
+
+- **新问题来源表**：`https://yuoukuajing.feishu.cn/base/OFyJb6hiGaOQeqs5G9ycqLEhnoc?table=tblTZyTxk0uQUjgA&view=vewqNWpvrv`。读取时新增 `探针单值编码` 字段（三表共用的对应键），问题文本优先读 `问题探针文本`（兼容旧 `问题文本`/`问题`）。该表没有 `是否开启深度思考`/`是否本次采集` 字段：缺省视为「本次采集」且 thinking=False，`--mark-collected` 请勿使用（无此列）。
+- **写回主表换新** (`tblhzxIjigHfhlGd`)，字段映射（均已按 field-list 核对）：`采集账号`（`--collect-account` 自定义）、`问题探针文本`（所问问题）、`探针单值编码`（与来源表一致）、`抓取轮次`（文本字段，默认 `NO.1`，`--capture-round`/`captureRound` 可自定义）、`关键词`（深度思考内容）、`AI回答`、`是否触发联网`（单选 是/否：原判断逻辑 + db 模式按是否携带 web 来源）、`分享对话链接`、`AI平台`（单选，千问对应 **`Qwen移动端`**，无「千问移动端」选项）、`抓取日期`（文本字段，`YYYY-MM-DD HH:MM` 精确到分钟）。
+- **参考来源表换新** (`tbld8YZTYFajQFbT`)：chat.db 抓到的淘宝商品卡由 **Python 直接写入**，一卡一行：`探针单值编码`、`映射淘宝店铺`（商品卡 itemId）、`引用来源平台`=`淘宝`、`来源类型`=`商品卡`（单选：图文/视频/文章/商品卡）、`来源URL`（`item.taobao.com/item.htm?id=` 补全的完整商品链接）、`来源标题`（卡片商品标题）、`来源摘取日期`（`YYYY-MM-DD HH:MM`）。非 db 模式的 web 来源仍由 JS 提取器写入（注意 JS 侧字段仍是旧结构，针对旧来源表）。
+- **`adb_client.set_ime` 兼容 MuMu 类模拟器**：`ime set` 被 ROM 禁用时回退为 `settings put secure default_input_method`（输入法需已在启用列表中）。
+- 所有写回字段名集中在 `feishu_base.py` 的 `ANSWER_WRITEBACK_FIELDS` / `SOURCE_WRITEBACK_FIELDS`，与飞书表列名不一致时只需改这两处。
 
 ### 2026-07-06 — 本地 chat.db 捕获模式（默认）
 
@@ -254,6 +262,7 @@ python -m mobile_auto_qianwen.runner `
 | `--writeback` | Write answers back to Feishu after each question. |
 | `--mark-collected` | With `--writeback`, set `是否本次采集` to `否` after a successful answer writeback. |
 | `--collect-account` | Override the `采集账号` field written to Feishu. |
+| `--capture-round` | Override the `抓取轮次` field written to Feishu. Default `NO.1`; also settable via feishu-config `captureRound`. |
 | `--extract-sources` | Enable the JS source extractor. After the phone captures the share link, invoke `qianwen-source-extractor/run.js` to extract sources and write them to the Feishu source table. |
 | `--cdp-url` | CDP endpoint for the JS extractor. Default: `http://127.0.0.1:9222`. |
 | `--extractor-script` | Explicit path to `qianwen-source-extractor/run.js`. Auto-located if omitted. |
@@ -406,31 +415,36 @@ When `--writeback` is enabled (Feishu Base mode), the runner writes one row per 
 
 | Feishu Field | Source |
 |--------------|--------|
-| 采集账号 | `--collect-account` or `options.collectAccount` |
-| 问题文本 | The question text |
-| 问题ID | The `问题ID` field from the Feishu input row; legacy input field `关联自然问句` is still accepted during migration |
-| 是否开启深度思考 | Whether deep-thinking was requested |
+| 采集账号 | `--collect-account` or `options.collectAccount` (customizable) |
+| 问题探针文本 | The question text |
+| 探针单值编码 | The `探针单值编码` field from the Feishu input row (shared key across all three tables) |
+| 抓取轮次 | `--capture-round` or config `captureRound`; default `NO.1` (text field) |
+| 关键词 | Captured deep-thinking content |
 | AI回答 | Captured answer text |
-| 深度思考 | Captured thinking content |
-| 是否触发联网 | Whether the answer used web sources |
-| 对话链接 | The captured share URL |
-| AI平台 | `千问移动端` |
+| 是否触发联网 | Select 是/否. Thinking panel opened (legacy logic); in chat.db mode: answer carries web sources |
+| 分享对话链接 | The captured share URL (empty in chat.db mode) |
+| AI平台 | Select; Qianwen maps to `Qwen移动端` |
+| 抓取日期 | Text `YYYY-MM-DD HH:MM`, writeback moment truncated to the minute |
 
-When `--extract-sources` is also enabled, the JS extractor writes one row per source to the Feishu source table with these fields:
+The Python runner also writes one row per Taobao product card (chat.db mode) to the Feishu source table:
 
 | Feishu Field | Source |
 |--------------|--------|
-| 来源标题 | `source.title` |
-| 来源URL | `source.url` (real article URL, not just the domain) |
-| 引用来源类型 | `视频` or `图文` (inferred) |
-| 引用来源平台 | `source.platform` (cleaned) |
-| 问题ID | The question ID passed to the extractor |
+| 探针单值编码 | Same key as the answer row |
+| 映射淘宝店铺 | `product.itemId` (the ID from the captured card link) |
+| 引用来源平台 | `淘宝` |
+| 来源类型 | Select; `商品卡` |
+| 来源URL | `https://item.taobao.com/item.htm?id=<itemId>` (full accessible product URL) |
+| 来源标题 | Product card title |
+| 来源摘取日期 | Text `YYYY-MM-DD HH:MM` |
+
+When `--extract-sources` is enabled (non-db fallback), the JS extractor still writes web source rows itself using its legacy field layout (来源标题/来源URL/引用来源类型/引用来源平台/问题ID) — only relevant for the old source table.
 
 Built-in Feishu table ids (in `feishu_base.py`):
 
 ```python
-FEISHU_ANSWER_TABLE_ID = "tblaV1deA4L9hzze"
-FEISHU_SOURCE_TABLE_ID = "tblF1LsniY1BnOt3"
+FEISHU_ANSWER_TABLE_ID = "tblhzxIjigHfhlGd"
+FEISHU_SOURCE_TABLE_ID = "tbld8YZTYFajQFbT"
 ```
 
 ## How The Two Modules Cooperate
