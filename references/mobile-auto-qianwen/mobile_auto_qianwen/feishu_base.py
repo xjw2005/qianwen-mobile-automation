@@ -411,7 +411,7 @@ def build_feishu_writeback_rows_for_result(source_session: dict, result: dict, c
             continue
         source_rows.append([
             tanzhen_code,
-            item_id,
+            clean_text(product.get("shop")),
             SOURCE_PLATFORM_TAOBAO,
             SOURCE_TYPE_PRODUCT_CARD,
             product.get("cleanUrl") or f"https://item.taobao.com/item.htm?id={item_id}",

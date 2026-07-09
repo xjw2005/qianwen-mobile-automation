@@ -32,6 +32,31 @@ from .constants import QIANWEN_PACKAGE
 CHAT_DB_PATH = f"/data/data/{QIANWEN_PACKAGE}/databases/chat.db"
 _REMOTE_TMP = "/sdcard/_qw_chatdb_pull.db"
 
+# 千问服务端限流/拒答/出错时会把提示文案当成正常回答落库（turn 仍标记 complete），
+# 必须识别出来判为失败，否则会被当作真实答案写回飞书。这类文案措辞多变（既有直白的
+# "访问人数过多"，也有俏皮话术如"我的智慧小雷达在这里没信号了"），逐字枚举关键词不
+# 可靠——改用长度启发式：本项目问题都是"推荐类"问答，真实回答从未低于 ~250 字
+# （实测最短 296 字），任何低于该阈值的 complete 回答基本可以断定是系统提示/拒答，
+# 而非真实内容。关键词仍保留作为兜底，防止极少数场景下阈值判断失手。
+_SERVER_BUSY_MARKERS = (
+    "访问人数过多",
+    "服务器繁忙",
+    "请稍后再试",
+    "网络异常",
+    "加载失败",
+    "服务暂时不可用",
+)
+_SUSPICIOUS_ANSWER_MAX_LEN = 120
+
+
+def _is_server_busy_answer(answer: str) -> bool:
+    text = (answer or "").strip()
+    if not text:
+        return False
+    if len(text) < _SUSPICIOUS_ANSWER_MAX_LEN:
+        return True
+    return any(marker in text for marker in _SERVER_BUSY_MARKERS)
+
 
 # --------------------------------------------------------------------------- #
 # root / pull
@@ -100,6 +125,27 @@ def _find_cate_title(card_data) -> str | None:
     return box[0] if box else None
 
 
+def _shop_name_of(item: dict) -> str | None:
+    """商品卡的店铺名在 shopInfo.shopInfoList[0]（[1] 固定是"进店"按钮文案，不是店铺名的
+    一部分——shopInfo 本身没有 title 字段，误读它会一直拿到 None）。structuredShopInfo.
+    infoList[] 里另有一份带 sourceType=="shop_name" 标记的同名文本，作为兜底源。"""
+    shop = item.get("shopInfo")
+    if isinstance(shop, dict):
+        names = shop.get("shopInfoList")
+        if isinstance(names, list) and names:
+            name = names[0]
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    structured = item.get("structuredShopInfo")
+    if isinstance(structured, dict):
+        for entry in structured.get("infoList") or []:
+            if isinstance(entry, dict) and entry.get("sourceType") == "shop_name":
+                text = entry.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+    return None
+
+
 def _extract_products(card_content: dict) -> list[dict]:
     """Walk cardData for any node with item_id+title. Handles taoassistant_single_product
     (cardData.data), _fold_product_feeds (cardData.data.items[]), and band (transItems)."""
@@ -116,14 +162,13 @@ def _extract_products(card_content: dict) -> list[dict]:
             if is_item(o):
                 iid = o.get("item_id") or o.get("itemId")
                 if iid:
-                    shop = o.get("shopInfo")
                     out.append({
                         "cateTitle": cate,
                         "title": o.get("title") or o.get("listTwoLineTitle"),
                         "price": _price_of(o),
                         "sales": o.get("realSales"),
                         "itemId": str(iid),
-                        "shop": shop.get("title") if isinstance(shop, dict) else None,
+                        "shop": _shop_name_of(o),
                         "isAd": o.get("isP4p"),
                         "image": o.get("pict_url") or o.get("pic_path"),
                         "cleanUrl": f"https://item.taobao.com/item.htm?id={iid}",
@@ -281,17 +326,35 @@ def capture_via_db(adb: AdbClient, question: str, output_dir: str,
             err = str(exc)
             time.sleep(poll_interval)
             continue
-        parsed = extract_for_question(db_path, question)
+        try:
+            parsed = extract_for_question(db_path, question)
+        except sqlite3.Error as exc:
+            # 拷贝 chat.db 时若 App 正在写入，snapshot 可能处于半写状态（"database disk
+            # image is malformed"）。这是瞬时问题：下一轮重新 pull 通常就能拿到完整快照，
+            # 不应直接判整题失败。
+            err = f"chat_db_snapshot_error:{exc}"
+            time.sleep(poll_interval)
+            continue
         if parsed:
-            last = parsed
-            if parsed.get("status") == "complete" and parsed.get("answer"):
-                parsed["dbStatus"] = "success"
-                parsed["error"] = None
-                return parsed
+            busy = parsed.get("status") == "complete" and _is_server_busy_answer(parsed.get("answer"))
+            if busy:
+                # 落库的是限流提示本身。这条 req_id 的结果不会再变，但同一问题在这次全新
+                # 提问里可能对应一个还没落库/还没跑完的更新 req_id（尤其在重跑同一问题文本
+                # 时，extract_for_question 短暂只能匹配到旧的那条 complete 记录）。所以不能
+                # 立即返回失败——继续轮询，把它当"还没等到有效答案"，让更新的 turn 有机会出现。
+                err = f"qwen_server_busy_response:{parsed['answer']!r}"
+                if not (last and last.get("answer") and not _is_server_busy_answer(last.get("answer"))):
+                    last = {**parsed, "answer": ""}
+            else:
+                last = parsed
+                if parsed.get("status") == "complete" and parsed.get("answer"):
+                    parsed["dbStatus"] = "success"
+                    parsed["error"] = None
+                    return parsed
         time.sleep(poll_interval)
     if last:
         last["dbStatus"] = "partial" if last.get("answer") else "failed"
-        last["error"] = None if last.get("answer") else "turn_incomplete"
+        last["error"] = None if last.get("answer") else (err or "turn_incomplete")
         return last
     return {"dbStatus": "failed", "answer": "", "thinking": "", "products": [],
             "sources": [], "videos": [], "reqId": None, "error": err or "turn_not_found_in_db"}
