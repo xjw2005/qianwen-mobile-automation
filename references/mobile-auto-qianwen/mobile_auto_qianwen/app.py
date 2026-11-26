@@ -33,7 +33,6 @@ SOURCE_TITLE_SUFFIXES = (
 )
 THINKING_SECTION_TITLE_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{2,18}$")
 
-
 def dump_xml(adb: AdbClient, output_dir: str | Path, label: str) -> str:
     """Dump the current UI XML to a labeled file."""
     xml = adb.dump_xml()
