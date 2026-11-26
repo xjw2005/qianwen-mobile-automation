@@ -396,7 +396,7 @@ def run_question(
         extractor_enabled = bool(source_extractor_context and source_extractor_context.get("enabled"))
         if extractor_enabled and share_url:
             meta = (session_meta or {}) if session_meta else {}
-            natural_question = meta.get("linkedNaturalQuestion") or meta.get("naturalQuestion") or question
+            natural_question = meta.get("tanzhenCode") or meta.get("linkedNaturalQuestion") or meta.get("naturalQuestion") or question
             base_token = source_extractor_context.get("baseToken", "")
             table_id = source_extractor_context.get("tableId", "")
             extractor_options = source_extractor_context.get("options") or ExtractorOptions()
@@ -682,10 +682,14 @@ def main() -> None:
         raise ValueError("No Feishu rows selected. Check 是否本次采集.")
     writeback_context = None
     if loaded.get("source") == "feishu-base":
+        writeback_base = dict(loaded["base"])
+        if args.source_base_token:
+            writeback_base["baseToken"] = args.source_base_token
         planned = planned_writeback(task, True, answer_table_id=args.answer_table_id, source_table_id=args.source_table_id)
         writeback_context = {
             "enabled": args.writeback,
-            "base": loaded["base"],
+            "base": writeback_base,
+            "inputBase": loaded["base"],
             "markCollected": args.mark_collected,
             "collectAccount": args.collect_account or task.get("options", {}).get("collectAccount"),
             "captureRound": args.capture_round or task.get("options", {}).get("captureRound"),

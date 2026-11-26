@@ -94,7 +94,9 @@ function createFeishuRecords(baseToken, tableId, fields, rows, dryRun = false) {
       encoding: 'utf8',
       maxBuffer: 50 * 1024 * 1024,
     });
-    return JSON.parse(result);
+    const jsonStart = result.indexOf('{');
+    if (jsonStart < 0) throw new Error(`lark-cli returned no JSON: ${result}`);
+    return JSON.parse(result.slice(jsonStart));
   } finally {
     fs.unlinkSync(tmpFile);
   }
@@ -107,13 +109,17 @@ function createFeishuRecords(baseToken, tableId, fields, rows, dryRun = false) {
  * @returns {object} { fields, rows }
  */
 function buildRows(data, naturalQuestion) {
-  const fields = ['来源标题', '来源URL', '引用来源类型', '引用来源平台', '问题ID'];
+  const fields = ['来源标题', '来源URL', '来源类型', '引用来源平台', '探针单值编码', '来源摘取日期'];
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  const extractedAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
   const rows = data.sources.map(source => [
     source.title || source.url || '',
     source.url || '',
     inferSourceType(source),
     normalizePlatform(source.platform),
     naturalQuestion,
+    extractedAt,
   ]);
   return { fields, rows };
 }

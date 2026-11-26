@@ -37,3 +37,26 @@ desktop.ini
 .env
 .env.local
 config.local.*
+
+# Local runtime & private batch artifacts
+.workbuddy/
+.chrome-profile/
+**/.chrome-profile/
+**/.lark-payloads/
+**/.deps/
+**/results_*/
+**/tasks_local/
+**/*_checkpoint.json
+**/*_log.txt
+**/run_log.txt
+**/run_now.bat
+**/run_now.ps1
+**/run_bg.bat
+**/run_chain.sh
+**/run_local_*.ps1
+**/live-chat.db
+*.db
+**/configs/feishu-*-r20*.json
+**/deepseek_gapfill_tasks_*.json
+**/node_modules
+**/NUL

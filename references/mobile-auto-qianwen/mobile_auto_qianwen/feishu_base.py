@@ -411,7 +411,7 @@ def build_feishu_writeback_rows_for_result(source_session: dict, result: dict, c
             continue
         source_rows.append([
             tanzhen_code,
-            item_id,
+            clean_text(product.get("shop")),
             SOURCE_PLATFORM_TAOBAO,
             SOURCE_TYPE_PRODUCT_CARD,
             product.get("cleanUrl") or f"https://item.taobao.com/item.htm?id={item_id}",
@@ -475,14 +475,14 @@ def write_feishu_result(writeback_context: dict, source_session: dict, result: d
         }
     source_record_id = (source_session.get("meta") or {}).get("feishuRecordId")
     if writeback_context.get("markCollected") and rows["answerRows"] and source_record_id:
-        source_update_result = update_feishu_task_rows(base, [source_record_id], lark_cli, dry_run)
+        source_update_result = update_feishu_task_rows(writeback_context.get("inputBase", base), [source_record_id], lark_cli, dry_run)
     else:
         source_update_result = {"skipped": True, "reason": "no-source-record-id-or-answer-row" if writeback_context.get("markCollected") else "mark-collected-disabled"}
     return {
         "finishedAt": now_iso(),
         "answerTableId": answer_table_id,
         "sourceTableId": source_table_id,
-        "inputTableId": base["tableId"],
+        "inputTableId": writeback_context.get("inputBase", base)["tableId"],
         "sourceRecordId": source_record_id,
         "markCollected": bool(writeback_context.get("markCollected")),
         "answerCount": len(rows["answerRows"]),
